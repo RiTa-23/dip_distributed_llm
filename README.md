@@ -40,6 +40,12 @@ powershell -c "irm bun.sh/install.ps1 | iex"
 
 インストール後、ターミナルを開き直して `bun --version` が表示されることを確認する。
 
+### リポジトリのclone
+任意のディレクトリ（普段使ってる開発フォルダ等）に以下のコマンドでclone
+```
+git clone https://github.com/RiTa-23/dip_distributed_llm.git
+```
+
 ### インストール
 
 ```bash
