@@ -13,14 +13,12 @@
 | 知りたいこと | 読むファイル |
 |---|---|
 | 何を作っているか・全体アーキテクチャ | `docs/requirements.md` |
-| 用語の意味 | `docs/glossary.md` |
 | 誰が何を担当するか | `docs/role-assignment.md` |
 | ディレクトリ構成の意図 | `docs/directory-structure.md` |
 | WebSocketメッセージの形式 | `docs/api-contract.md` |
 | WebRTC接続確立の実装方法 | `docs/webrtc-implementation.md` |
 | Hono/Reactのコード例・進め方 | `docs/implementation-spec.md` |
 | なぜこの技術を選んだか | `docs/tech-selection-rationale.md` |
-| セットアップ手順 | `docs/setup-guide.md` |
 
 ## リポジトリ構成
 
