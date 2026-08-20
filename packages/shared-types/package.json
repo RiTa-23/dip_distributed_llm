@@ -1,0 +1,7 @@
+{
+  "name": "@dip_distributed_llm/shared-types",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./messages.ts",
+  "types": "./messages.ts"
+}

@@ -1,0 +1,5 @@
+{
+  "name": "distributed-llm",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"]
+}
