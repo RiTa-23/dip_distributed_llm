@@ -1,5 +1,8 @@
 {
   "name": "distributed-llm",
   "private": true,
-  "workspaces": ["apps/*", "packages/*"]
+  "workspaces": ["apps/*", "packages/*"],
+  "devDependencies": {
+    "oxfmt": "^0.64.0"
+  }
 }

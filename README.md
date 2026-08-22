@@ -60,6 +60,29 @@ cd apps/web && bun run dev
 
 `native/`配下(llama.cppのWASMビルド)はEmscriptenという別ツールチェーンを使うため、Bun/npmのコマンドでは操作しない。ビルド方法は [docs/tech-selection-rationale.md](./docs/tech-selection-rationale.md) を参照。
 
+## 開発コマンド
+
+`apps/web` / `apps/server` / `packages/shared-types` の各workspaceで、`cd`してから同じ4つのスクリプトが使える。
+
+| コマンド | 内容 |
+|---|---|
+| `bun run lint` | oxlintで静的解析 |
+| `bun run format` | oxfmtでフォーマットチェック(`--check`。差分があれば失敗する。実際にフォーマットを直すには `bunx oxfmt <対象パス>` を実行) |
+| `bun run test` | `bun test`でユニットテスト実行(テストファイルが無くても失敗しない) |
+| `bun run typecheck` | `tsc --noEmit`で型チェックのみ(ファイル出力なし) |
+
+```bash
+cd apps/web       # または apps/server, packages/shared-types
+bun run lint
+bun run format
+bun run test
+bun run typecheck
+```
+
+このほか `apps/web` / `apps/server` には `bun run dev` (開発サーバ起動)、`apps/web` には `bun run build` (本番ビルド) もある。
+
+これらは [.github/workflows/ci.yml](./.github/workflows/ci.yml) のCIでも同じスクリプトが実行される。`main`・`develop`へのpushとPull Requestで自動実行され、変更されたパス(`apps/web` / `apps/server` / `packages/shared-types`)に応じてジョブが分岐する。`native/`はビルドチェーンが別のためCI対象外。
+
 ## ドキュメント
 
 設計ドキュメント一式は [docs/README.md](./docs/README.md) の目次から辿れる。AIコーディングエージェント向けの前提情報は [AGENTS.md](./AGENTS.md) にまとめている。
