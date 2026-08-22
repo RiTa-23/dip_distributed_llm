@@ -1,13 +1,19 @@
 {
   "name": "@dip_distributed_llm/server",
   "scripts": {
-    "dev": "bun run --hot src/index.ts"
+    "dev": "bun run --hot src/index.ts",
+    "lint": "oxlint",
+    "format": "oxfmt --check src",
+    "test": "bun test --pass-with-no-tests",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@dip_distributed_llm/shared-types": "workspace:*",
     "hono": "^4.13.3"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "oxlint": "^1.75.0",
+    "typescript": "~6.0.2"
   }
 }
