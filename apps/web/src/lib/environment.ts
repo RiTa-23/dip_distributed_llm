@@ -10,7 +10,11 @@ export type Support = "yes" | "no" | "unknown";
 
 export type Environment = {
   webgpu: Support;
-  /** GB。navigator.deviceMemory は Firefox と Safari では取れない */
+  /**
+   * GB。navigator.deviceMemory の値で、端末の総RAMの概算である。
+   * 空き容量ではないし、2の累乗に丸められている(指紋対策)。
+   * Firefox と Safari では取れない。
+   */
   memoryGb: number | null;
   secureContext: boolean;
 };
@@ -58,5 +62,6 @@ export function describeWebgpu(s: Support): string {
 }
 
 export function describeMemory(gb: number | null): string {
-  return gb === null ? "空きメモリ 不明" : `空きメモリ ${gb} GB`;
+  // 「空きメモリ」と書かない。deviceMemory が返すのは総容量の概算である
+  return gb === null ? "端末メモリ 不明" : `端末メモリ ${gb} GB`;
 }

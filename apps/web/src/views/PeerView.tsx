@@ -46,8 +46,10 @@ export function PeerView() {
 
   const { phase } = state;
   const isActive = phase === "active";
-  // 空白だけの名前で参加させない。層バーに名前のない区間ができる
-  const canJoin = displayName.trim().length > 0;
+  // 空白だけの名前で参加させない。層バーに名前のない区間ができる。
+  // secure contextでないときも止める。SharedArrayBuffer・WebGPU・WebRTCが
+  // どれも使えず、参加しても計算できないため
+  const canJoin = env.secureContext && displayName.trim().length > 0;
 
   // 接続できたら名乗る。本物のHonoでも同じ
   useEffect(() => {
