@@ -1,0 +1,175 @@
+.page {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+}
+
+.body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 230px) minmax(0, 1fr);
+  min-height: 0;
+}
+
+.sidebar {
+  border-right: 1px solid var(--c-line-soft);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.sectionLabel {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--c-text-dim);
+  margin-bottom: 10px;
+}
+
+.peers {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.peerRow {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.peerName {
+  font-size: 14px;
+}
+
+.peerRange {
+  font-size: 12px;
+  color: var(--c-text-dim);
+}
+
+.peerBar {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--c-surface-2);
+  margin-top: 3px;
+}
+
+.computing .peerName,
+.computing .peerRange {
+  color: var(--c-active);
+}
+
+.computing .peerBar {
+  background: var(--c-active);
+}
+
+.dim {
+  font-size: 12px;
+  color: var(--c-text-dim);
+  margin-top: 6px;
+}
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.log {
+  flex: 1;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+.user {
+  align-self: flex-end;
+  max-width: 70%;
+  background: var(--c-surface-2);
+  border-radius: 12px;
+  padding: 9px 14px;
+  font-size: 14px;
+}
+
+.assistant {
+  align-self: flex-start;
+  max-width: 85%;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.caret {
+  color: var(--c-active);
+}
+
+.composer {
+  border-top: 1px solid var(--c-line-soft);
+  padding: 12px 16px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.sendButton {
+  background: var(--c-active);
+  border-color: var(--c-active);
+  color: var(--c-bg);
+  font-weight: 500;
+  flex: none;
+}
+
+.sendButton:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--c-active) 85%, var(--c-text));
+}
+
+.notice {
+  margin: 16px 20px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--c-active);
+  border-radius: var(--radius);
+  font-size: 13px;
+  color: var(--c-active);
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+@media (max-width: 860px) {
+  .body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar {
+    border-right: none;
+    border-bottom: 1px solid var(--c-line-soft);
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 16px 28px;
+  }
+
+  .sidebar > * {
+    flex: 1 1 200px;
+  }
+
+  .peers {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 12px 20px;
+  }
+
+  .peerRow {
+    flex: 1 1 130px;
+  }
+
+  .log {
+    padding: 16px;
+  }
+
+  .user,
+  .assistant {
+    max-width: 100%;
+  }
+}

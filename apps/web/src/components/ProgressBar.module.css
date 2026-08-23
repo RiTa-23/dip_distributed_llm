@@ -1,0 +1,13 @@
+.track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--c-surface-2);
+  overflow: hidden;
+}
+
+.fill {
+  display: block;
+  height: 100%;
+  background: var(--c-line);
+  transition: width 0.2s linear;
+}
