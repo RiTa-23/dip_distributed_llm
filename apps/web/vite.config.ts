@@ -5,6 +5,8 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   server: {
+    // QRから参加者のスマホで開くので、LANの他の端末から見える必要がある
+    host: true,
     // WASM版llama.cppがpthreadを使うためSharedArrayBufferが要る。
     // 本番のHono側と同じヘッダを開発サーバーにも付けないと、devでだけ動かない状態になる。
     headers: {

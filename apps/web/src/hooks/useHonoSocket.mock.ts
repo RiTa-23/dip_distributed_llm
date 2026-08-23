@@ -49,15 +49,24 @@ export function useHonoSocketMock({ enabled }: SocketOptions): HonoSocket {
   const queue = useRef<ServerMessage[]>([]);
   const flushing = useRef(false);
 
-  useEffect(() => {
-    if (enabled) return;
-    peers.current = [];
+  /**
+   * 予約済みのタイマーを必ず捨てる。残すと、離脱したあとに emitRoster や
+   * startGeneration が発火し、idle に戻ったはずの画面が connecting へ引き戻される。
+   */
+  const clearAll = useCallback(() => {
+    timers.current.forEach(clearTimeout);
+    timers.current = [];
     queue.current = [];
-    return () => {
-      timers.current.forEach(clearTimeout);
-      timers.current = [];
-    };
-  }, [enabled]);
+    flushing.current = false;
+    peers.current = [];
+  }, []);
+
+  useEffect(() => {
+    // lastMessage は消さない。useCluster は値が変わったときだけ dispatch するので、
+    // 古い1件が残っていても再送はされない
+    if (!enabled) clearAll();
+    return clearAll;
+  }, [enabled, clearAll]);
 
   /**
    * 同じ tick で setState を2回呼ぶと後の1件しか残らない(前の1件は誰にも観測されない)。

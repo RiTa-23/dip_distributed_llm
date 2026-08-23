@@ -14,14 +14,14 @@ export function deriveAssignments(peers: PeerInfo[], totalLayers: number): Layer
   const base = Math.floor(totalLayers / peers.length);
   const rest = totalLayers % peers.length;
   let cursor = 0;
-  return peers.map((p, i) => {
+  const out: LayerAssignment[] = [];
+  for (const [i, p] of peers.entries()) {
     const span = base + (i < rest ? 1 : 0);
-    const a: LayerAssignment = {
-      clientId: p.clientId,
-      startLayer: cursor,
-      endLayer: cursor + span - 1,
-    };
+    // 参加者が総層数より多いと span が 0 になる。
+    // そのまま返すと endLayer < startLayer の区間ができて層バーが壊れるので落とす
+    if (span === 0) continue;
+    out.push({ clientId: p.clientId, startLayer: cursor, endLayer: cursor + span - 1 });
     cursor += span;
-    return a;
-  });
+  }
+  return out;
 }

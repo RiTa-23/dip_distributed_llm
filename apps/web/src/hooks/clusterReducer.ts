@@ -25,7 +25,8 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
       return { ...s, phase: "preparing", errorMessage: null };
 
     case "socket_closed":
-      return { ...s, phase: "idle", roster: [] };
+      // 世代も戻す。残すと離脱後の上端に「0人 · 第N世代」が出る
+      return { ...s, phase: "idle", roster: [], generation: 0 };
 
     case "local_ready":
       // 編成が先に始まっていた場合に巻き戻さない
@@ -38,7 +39,7 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
       return { ...s, phase: "error", errorMessage: a.message };
 
     case "reset":
-      return { ...s, phase: "idle", roster: [], errorMessage: null };
+      return { ...s, phase: "idle", roster: [], generation: 0, errorMessage: null };
 
     case "dev_set_phase":
       return { ...s, phase: a.phase };

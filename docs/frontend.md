@@ -10,7 +10,7 @@
 
 ## 動かし方
 
-```
+```bash
 bun install          # リポジトリのルートで
 cd apps/web
 bun run dev
@@ -32,7 +32,7 @@ bun run dev
 
 参加者と発表者は**同じ順で同じ状態を通ります**。違うのは各状態で何をしているかだけです。
 
-```
+```text
 idle ─→ preparing ─→ waiting ─→ connecting ─→ active
                         ↑                        │
                         └──── reorganizing ←─────┘
@@ -56,7 +56,7 @@ idle ─→ preparing ─→ waiting ─→ connecting ─→ active
 
 モデル(GGUF)のダウンロードは数GBあるので、編成の進行とは**独立して**画面を開いた瞬間から走ります。
 
-```
+```text
 トラックA  ダウンロード ─────────────────→ 完了
 トラックB  preparing → waiting → connecting → active
                                               ↓
@@ -67,7 +67,7 @@ idle ─→ preparing ─→ waiting ─→ connecting ─→ active
 
 ## ディレクトリ
 
-```
+```text
 apps/web/src/
 ├── App.tsx                    パスで役割を分ける(分岐はここ1か所だけ)
 ├── index.css                  配色トークンと素の要素のリセットだけ

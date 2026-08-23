@@ -198,6 +198,10 @@ export function RequesterView() {
               disabled={!canSubmit}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
+                // 日本語入力の変換確定のEnterで送信してしまわないようにする。
+                // Safariは compositionend の後に isComposing:false でEnterを投げるので、
+                // IME処理中を表す keyCode 229 も併せて見る
+                if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
                 if (e.key === "Enter") run();
               }}
             />

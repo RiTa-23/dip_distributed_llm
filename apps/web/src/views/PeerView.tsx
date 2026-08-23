@@ -43,6 +43,8 @@ export function PeerView() {
 
   const { phase } = state;
   const isActive = phase === "active";
+  // 空白だけの名前で参加させない。層バーに名前のない区間ができる
+  const canJoin = displayName.trim().length > 0;
 
   // 接続できたら名乗る。本物のHonoでも同じ
   useEffect(() => {
@@ -51,7 +53,7 @@ export function PeerView() {
       type: "hello",
       role: "peer",
       clientId: myId,
-      displayName,
+      displayName: displayName.trim(),
     });
     // ①のWASM起動の代わり。完了したら準備完了を知らせる
     const t = window.setTimeout(() => {
@@ -129,7 +131,7 @@ export function PeerView() {
               placeholder="表示名"
               onChange={(e) => setDisplayName(e.target.value)}
             />
-            <button type="button" className={styles.join} onClick={join}>
+            <button type="button" className={styles.join} disabled={!canJoin} onClick={join}>
               参加する
             </button>
             <div className={styles.env}>
