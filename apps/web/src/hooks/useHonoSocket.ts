@@ -32,30 +32,30 @@ export function useHonoSocket({ enabled }: SocketOptions): HonoSocket {
   const socket = useRef<WebSocket | null>(null);
   /** 受信の順番待ち。FRAME_MSごとに1件ずつ setLastMessage する */
   const queue = useRef<ServerMessage[]>([]);
-  const flushing = useRef(false);
-  const timers = useRef<number[]>([]);
+  /** 流している最中の1件だけを持つ。溜めると接続が長いほど増え続ける */
+  const flushTimer = useRef<number | null>(null);
   /** まだ接続中(CONNECTING)のあいだに send された分。openで一度に流す */
   const outbox = useRef<string[]>([]);
 
   const clearQueue = useCallback(() => {
-    timers.current.forEach(clearTimeout);
-    timers.current = [];
+    if (flushTimer.current !== null) {
+      clearTimeout(flushTimer.current);
+      flushTimer.current = null;
+    }
     queue.current = [];
-    flushing.current = false;
   }, []);
 
   const emit = useCallback((msg: ServerMessage) => {
     queue.current.push(msg);
-    if (flushing.current) return;
-    flushing.current = true;
+    if (flushTimer.current !== null) return;
     const step = () => {
       const next = queue.current.shift();
       if (!next) {
-        flushing.current = false;
+        flushTimer.current = null;
         return;
       }
       setLastMessage(next);
-      timers.current.push(window.setTimeout(step, FRAME_MS));
+      flushTimer.current = window.setTimeout(step, FRAME_MS);
     };
     step();
   }, []);
@@ -109,6 +109,9 @@ export function useHonoSocket({ enabled }: SocketOptions): HonoSocket {
         if (disposed) return;
         socket.current = null;
         outbox.current = [];
+        // 流し残しは捨てる。残すと socket_closed(=idle)のあとに古いソケットの
+        // generation_start が届き、離脱したはずの画面が受信中へ戻る
+        clearQueue();
         setConnected(false);
         const wait = RETRY_MS[Math.min(retry, RETRY_MS.length - 1)];
         retry += 1;
