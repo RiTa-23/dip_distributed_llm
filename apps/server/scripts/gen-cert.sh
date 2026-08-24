@@ -13,8 +13,13 @@ fi
 
 mkdir -p certs
 
-# このマシンの LAN IP(取得できなければ localhost のみ)
-LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "")
+# このマシンの LAN IP(取得できなければ localhost のみ)。
+# 既定ルートのアクティブなインターフェースを優先し、無ければ en0/en1、最後に空。
+DEFAULT_IF=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')
+LAN_IP=$(ipconfig getifaddr "${DEFAULT_IF:-en0}" 2>/dev/null \
+  || ipconfig getifaddr en0 2>/dev/null \
+  || ipconfig getifaddr en1 2>/dev/null \
+  || echo "")
 
 # ローカルCAを信頼ストアに導入(既に導入済みなら no-op)
 mkcert -install

@@ -14,8 +14,11 @@ app.use("*", async (c, next) => {
 });
 
 // --- 制御プレーン(P1で実装) ---
-// app.get("/ws", upgradeWebSocket(...)) を静的配信より前に登録すること。
-// ここに来る前に処理されるので SPA フォールバックに飲まれない。
+// /ws は制御プレーン用に予約。静的配信・SPAフォールバックより前に登録し、
+// index.html に飲まれないようにする。WebSocket未実装のうちは 404 を返す。
+// P1で upgradeWebSocket(...) を実装する際は、この 404 スタブを置き換える。
+app.get("/ws", (c) => c.notFound());
+app.get("/ws/*", (c) => c.notFound());
 
 // --- 静的配信(#12) ---
 // マウント順が重要: models / wasm を先に処理し、最後に web-dist(SPA)へフォールバックする。
