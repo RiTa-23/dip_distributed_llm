@@ -1,2 +1,13 @@
 # deps
 node_modules/
+
+# TLS証明書(mkcert。各自ローカルで生成 → bun run cert)
+certs/
+
+# 静的配信の成果物・大容量ファイル(各自ローカルで用意)
+public/models/*
+!public/models/.gitkeep
+public/wasm/*
+!public/wasm/.gitkeep
+public/web-dist/*
+!public/web-dist/.gitkeep
