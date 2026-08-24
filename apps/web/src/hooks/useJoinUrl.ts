@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { JOIN_INFO_PATH, JOIN_INFO_URL_OVERRIDE } from "../config";
+import { JOIN_INFO_PATH } from "../config";
+import { parseJoinUrls } from "../lib/joinInfo";
 
 export type JoinUrl = {
   /** QRに入れる参加URL。取得前・取得失敗時は今開いているオリジン */
@@ -10,15 +11,6 @@ export type JoinUrl = {
   select: (url: string) => void;
 };
 
-/** `/join-info` の応答。サーバの `buildJoinUrls()` が作る */
-type JoinInfo = { joinUrls: string[] };
-
-function isJoinInfo(v: unknown): v is JoinInfo {
-  if (typeof v !== "object" || v === null) return false;
-  const urls = (v as { joinUrls?: unknown }).joinUrls;
-  return Array.isArray(urls) && urls.every((u) => typeof u === "string");
-}
-
 /**
  * 参加者に配るURLをHonoから受け取る。
  *
@@ -26,8 +18,10 @@ function isJoinInfo(v: unknown): v is JoinInfo {
  * QRの中身が参加者の端末から見て自分自身を指してしまうため。会場のLAN IPはブラウザからは
  * 分からないので、NICを列挙できるサーバ側に決めさせる(`/join-info`)。
  *
- * viteのdevサーバ単体で開いているときは `/join-info` が無い(index.htmlが返る)。
- * その場合はJSONの解釈に失敗するので、今開いているオリジンへ黙って落とす。
+ * 問い合わせ先は常に同一オリジン。本番はHonoがフロントごと配るので同一オリジンで済み、
+ * viteのdevサーバから使うときは vite.config.ts のプロキシがHonoへ中継する
+ * (CORSヘッダを足さずに済ませるため)。プロキシが無ければJSONにならないので、
+ * 今開いているオリジンへ黙って落とす。
  */
 export function useJoinUrl(): JoinUrl {
   const [candidates, setCandidates] = useState<string[]>([]);
@@ -35,12 +29,13 @@ export function useJoinUrl(): JoinUrl {
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch(JOIN_INFO_URL_OVERRIDE || JOIN_INFO_PATH, { signal: controller.signal })
+    fetch(JOIN_INFO_PATH, { signal: controller.signal })
       .then((res) => (res.ok ? res.json() : null))
       .then((body: unknown) => {
-        if (!isJoinInfo(body) || body.joinUrls.length === 0) return;
-        setCandidates(body.joinUrls);
-        setChosen((prev) => prev ?? body.joinUrls[0]);
+        const urls = parseJoinUrls(body);
+        if (urls.length === 0) return;
+        setCandidates(urls);
+        setChosen((prev) => prev ?? urls[0]);
       })
       .catch(() => {
         // 取得できなくても画面は成立する(同一オリジンのURLを出す)ので握りつぶす

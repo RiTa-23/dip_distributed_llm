@@ -89,6 +89,7 @@ apps/web/src/
 │   ├── useCluster.ts          両画面が状態に触る唯一の入口。どちらの接続を使うかもここ
 │   ├── useHonoSocket.ts       本物の /ws への接続(再接続・受信の検証つき)
 │   ├── useJoinUrl.ts          QRに入れる参加URLを /join-info から受け取る
+│   │                          (応答の検証は lib/joinInfo.ts)
 │   └── useHonoSocket.mock.ts  Honoの代わり。本物と同じ形を返す
 ├── lib/
 │   ├── clientId.ts            localStorageに保存するclientId
@@ -122,11 +123,13 @@ GET /join-info  →  { "joinUrls": ["https://192.168.11.5:8443/"] }
 
 WebSocketメッセージにしていないのは、QRが接続確立より前に必要で、`packages/shared-types` の契約を増やすと `docs/api-contract.md` の更新義務が付いてくるからです。単発のGETで足ります。
 
-viteのdevサーバ単体(5173)では `/join-info` が無いため、今開いているオリジンへ黙って落ちます。dev中に本物のLAN IPで試すときだけ上書きしてください。
+問い合わせ先は**常に同一オリジン**です。別オリジンのHonoを直接fetchするとCORSで弾かれ、黙ってフォールバックしてしまうため、dev中に本物のLAN IPで試すときは vite のプロキシ経由にします。
 
 ```bash
-VITE_JOIN_INFO_URL=https://localhost:8443/join-info bun run dev
+VITE_HONO_ORIGIN=https://localhost:8443 bun run dev
 ```
+
+指定しなければプロキシは張られず、今開いているオリジン(`http://localhost:5173/`)がQRに入ります。応答の検証は [`lib/joinInfo.ts`](../apps/web/src/lib/joinInfo.ts) で、http(s)の絶対URL以外は捨てます(devサーバがindex.htmlを返しても、空のQRにはなりません)。
 
 ### 証明書の警告は消せない
 

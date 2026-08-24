@@ -18,16 +18,14 @@ export const DEFAULT_DISPLAY_NAME = "参加者のPC";
  */
 export const WS_URL_OVERRIDE: string = String(import.meta.env.VITE_HONO_WS_URL ?? "");
 
-/** 参加URLをHonoに問い合わせるパス。QRの中身になる(サーバの `/join-info`) */
-export const JOIN_INFO_PATH = "/join-info";
-
 /**
- * `/join-info` の問い合わせ先の上書き。既定(空文字)では同一オリジンへ問い合わせる。
- * viteのdevサーバ単体では `/join-info` が無く、同一オリジンのURLへ落ちる。
- * dev中も本物のLAN IPでQRを試したいときだけ使う。
- *   例: VITE_JOIN_INFO_URL=https://localhost:8443/join-info bun run dev
+ * 参加URLをHonoに問い合わせるパス。QRの中身になる(サーバの `/join-info`)。
+ *
+ * 常に同一オリジンへ投げる。別オリジンのHonoを直接叩くとCORSで弾かれるため、
+ * dev中に本物のLAN IPで試したいときは vite.config.ts のプロキシを使う。
+ *   例: VITE_HONO_ORIGIN=https://localhost:8443 bun run dev
  */
-export const JOIN_INFO_URL_OVERRIDE: string = String(import.meta.env.VITE_JOIN_INFO_URL ?? "");
+export const JOIN_INFO_PATH = "/join-info";
 
 /**
  * 制御プレーンをモックで動かすかどうか。
