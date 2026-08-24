@@ -4,26 +4,11 @@ import type {
   PeerInfo,
   ServerMessage,
 } from "@dip_distributed_llm/shared-types/messages";
+import type { HonoSocket, SocketOptions } from "../types/socket";
 import { randomId } from "../lib/clientId";
 
-/** 開発用パネルから呼ぶ操作。本物の接続では null になる */
-export type SocketDebug = {
-  addPeer: (displayName: string) => void;
-  removeLastPeer: () => void;
-  startGeneration: () => void;
-};
-
-export type HonoSocket = {
-  connected: boolean;
-  lastMessage: ServerMessage | null;
-  send: (msg: ClientMessage) => void;
-  debug: SocketDebug | null;
-};
-
-export type SocketOptions = {
-  /** false のあいだは接続しない。参加者は「参加する」を押すまで false */
-  enabled: boolean;
-};
+// 型は本物と共有する。片方だけ形が変わると、差し替えたときに初めて壊れる
+export type { HonoSocket, SocketDebug, SocketOptions } from "../types/socket";
 
 const OTHER_PEERS: PeerInfo[] = [
   { clientId: "c-mock-taro", displayName: "太郎のPC", status: "ready" },

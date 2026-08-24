@@ -1,12 +1,12 @@
 # フロントエンドの現状と進め方
 
-`apps/web` の中身についての説明。2026/8/23時点。
+`apps/web` の中身についての説明。2026/8/25時点。
 
 ## 3行でいうと
 
 - **画面は2つ。URLのパスだけで役割が決まる**(入口で選ばせる画面は作らない)
 - **今は全部ダミーで動く**。Honoが未完成でも、参加から貢献中までの流れが最後まで再現できる
-- **本物のWebSocketへの差し替えは1ファイル1行**で済むようにしてある
+- **本物のWebSocketクライアントは実装済み**。モックとの切り替えは環境変数1つ
 
 ## 動かし方
 
@@ -21,12 +21,22 @@ bun run dev
 | `/` | 参加者画面 | 計算資源を貸す側。QRの飛び先にする予定 |
 | `/requester` | 発表者画面 | 推論をリクエストする側。URLを直打ちする |
 
+本物のHono(`/ws`)へ繋ぐときは、モックを止めて接続先を渡します。
+
+```bash
+VITE_MOCK_SOCKET=0 VITE_HONO_WS_URL=wss://localhost:8443/ws bun run dev
+```
+
+同じオリジンから配信されている(Honoがフロントごと配る)場合は `VITE_HONO_WS_URL` は要りません。省略すると画面を開いているオリジンへ繋ぎます。
+
 画面の下端に **開発用パネル** が出ます(本番ビルドでは出ません)。
 
 - `PHASE` の7つのボタン … 任意の状態へ飛ぶ。エラーや再編成中の見た目はここから確認する
 - `ROSTER` の3つのボタン … ピアを足す/抜く、生成を開始する
 
 **「ピアを抜く」を押すと再編成が起きます。** ここがフロントで一番作り込みが要る箇所なので、何度でも試せるようにしてあります。
+
+`ROSTER` のボタンはモックのときだけ出ます。本物の接続では出す相手がいないので消えます。
 
 ## 画面が通る7つの状態
 
@@ -71,15 +81,19 @@ idle ─→ preparing ─→ waiting ─→ connecting ─→ active
 apps/web/src/
 ├── App.tsx                    パスで役割を分ける(分岐はここ1か所だけ)
 ├── index.css                  配色トークンと素の要素のリセットだけ
-├── config.ts                  総層数・モデル名・WSのパス
+├── config.ts                  総層数・モデル名・WSのパスと接続先の切り替え
 ├── types/cluster.ts           Phase・ClusterState・LayerAssignment
+├── types/socket.ts            モックと本物が共有する接続の型
 ├── hooks/
 │   ├── clusterReducer.ts      状態遷移のルール
-│   ├── useCluster.ts          両画面が状態に触る唯一の入口
+│   ├── useCluster.ts          両画面が状態に触る唯一の入口。どちらの接続を使うかもここ
+│   ├── useHonoSocket.ts       本物の /ws への接続(再接続・受信の検証つき)
 │   └── useHonoSocket.mock.ts  Honoの代わり。本物と同じ形を返す
 ├── lib/
 │   ├── clientId.ts            localStorageに保存するclientId
 │   ├── assignments.ts         層の割り当ての仮置き(表示専用)
+│   ├── parseServerMessage.ts  受信JSONの検証。契約に合わないフレームは捨てる
+│   ├── wsUrl.ts               接続先URLの組み立て
 │   └── format.ts              バイト数・件数の表示
 ├── components/                両画面で使う部品。1部品1フォルダ相当
 │   ├── TopBar / StatusBlock / LayerBar / ProgressBar / Metric / DevPanel
@@ -128,17 +142,21 @@ const { state, dispatch, send, assignments, debug } = useCluster({ enabled: true
 
 ここを通しておくと、モックから本物への差し替えが `useCluster.ts` の中だけで完結します。
 
-## 本物のHonoに繋ぎ込む手順(ステップ3)
+## 本物のHonoへの繋ぎ込み(ステップ3)
 
-1. `src/hooks/useHonoSocket.ts` を作る。返り値の形は `useHonoSocket.mock.ts` の `HonoSocket` と完全に同じにする
-2. `useCluster.ts` の import を1行差し替える
+`src/hooks/useHonoSocket.ts` が本物です。返り値の形はモックと同じなので、**ビューは1行も変わりません。**
 
-```diff
-- import { useHonoSocketMock as useHonoSocket } from "./useHonoSocket.mock";
-+ import { useHonoSocket } from "./useHonoSocket";
-```
+切り替えは `config.ts` の `USE_MOCK_SOCKET`(環境変数 `VITE_MOCK_SOCKET`)1か所です。②の `/ws`(#16〜#19)が入るまでの既定はモックのままにしてあります。入ったら既定を本物側へ倒してください。
 
-**ビューは1行も変わりません。** モックを噛ませてあるのはこのためです。
+このフックが持つのは接続と受け渡しだけで、フェーズの判断はしません。判断は今までどおり `clusterReducer.ts` に閉じています。作り込んであるのは次の3点です。
+
+| | なぜ |
+|---|---|
+| 受信JSONの検証([`lib/parseServerMessage.ts`](../apps/web/src/lib/parseServerMessage.ts)) | 型は共有していても、送ってくるのは別プロセス。`onmessage` の中で例外を投げると、その接続で以降のメッセージを1件も受け取れなくなる |
+| 自動再接続(指数バックオフ、上限4秒) | ②がサーバを再起動しても、会場で参加者に「リロードしてください」と言って回らずに済む。切れているあいだは `idle` に戻り、戻ってきたら `hello` から名乗り直す |
+| 受信を1件ずつ流す | 同じtickで2件届くと後の1件しか観測されない。モックが `FRAME_MS` を挟んでいるのと同じ理由 |
+
+Honoの代わりに最小のWSサーバを立てて、`hello` → `roster_update` → `generation_start` → 切断 → 自動再接続まで確認済みです(2026/8/25)。
 
 ## 分担
 
@@ -154,11 +172,10 @@ const { state, dispatch, send, assignments, debug } = useCluster({ enabled: true
 
 ### ②(Honoサーバ)へ
 
-1. **`generation_start` を発火させる条件が未実装です。** 今はコメントが残るだけで誰も呼んでいません。これが呼ばれないとフロントは `waiting` から一切進めません
-2. **HTTPS化(secure context)が必要です。** 会場LANで `http://192.168.x.x` のまま配信すると、WebGPU・pthread(SharedArrayBuffer)・WebRTC がすべて使えません。`localhost` だけが例外なので、開発中は気づきません
-3. **未知のパスに `index.html` を返すフォールバックが要ります。** URLだけで役割を分けているので、`/requester` を直接開くと404になります
+1. **`generation_start` を発火させる条件(#17)。** これが呼ばれないとフロントは `waiting` から一切進めません
+2. **新しい参加者が来たときも再編成してください。** フロントは「増えても減っても全員で組み直す」前提で作ってあります(異常系を1パターンに保つため)。#18 は切断時にしか `generation_aborted` を送らない読みなので、すり合わせたい点です
 
-なお開発サーバー側のCOOP/COEPヘッダは `vite.config.ts` に入れてあります。本番のHono側と揃えてください。
+配信基盤(COOP/COEP・HTTPS・SPAフォールバック、#12〜#15)は PR #24 で入りました。開発サーバー側のCOOP/COEPヘッダは `vite.config.ts` に同じものを入れてあります。
 
 ### ①(コア分散基盤)へ
 
@@ -175,7 +192,7 @@ const { state, dispatch, send, assignments, debug } = useCluster({ enabled: true
 
 | 場所 | 今 | 本物 |
 |---|---|---|
-| `useHonoSocket.mock.ts` | 固定のピア2人 + 自分 | Honoの `/ws` |
+| `useHonoSocket.mock.ts` | 固定のピア2人 + 自分 | `useHonoSocket.ts`(実装済み。`VITE_MOCK_SOCKET=0` で切り替え) |
 | `lib/assignments.ts` | 均等割り | ①の `getLayerAssignment()` |
 | `PeerView` のエンジン起動 | 2.2秒の `setTimeout` | ①の `startWasmPeerServer()` |
 | `PeerView` の処理回数・受信量 | 乱数 | `getStats()` または ①のフック |
@@ -186,5 +203,5 @@ const { state, dispatch, send, assignments, debug } = useCluster({ enabled: true
 ## 次にやること
 
 1. QRコードの表示(参加者を集める導線)
-2. 本物のWebSocketへの繋ぎ込み(②の完成後)
-3. WebRTCのシグナリング(②の完成後)
+2. ②の `/ws` 完成後に、`USE_MOCK_SOCKET` の既定を本物側へ倒して実機で確認する
+3. WebRTCのシグナリング(`webrtc_signal` の送受信。②の #19 の完成後)
