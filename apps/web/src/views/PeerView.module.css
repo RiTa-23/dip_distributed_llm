@@ -41,6 +41,18 @@
   color: var(--c-text-dim);
 }
 
+/* 満たしていない項目。--c-active は稼働中を表す色なので使わない */
+.envBad {
+  color: var(--c-text);
+  text-decoration: underline;
+  text-decoration-color: var(--c-line);
+  text-underline-offset: 3px;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
 .notice {
   border: 1px solid var(--c-active);
   border-radius: var(--radius);

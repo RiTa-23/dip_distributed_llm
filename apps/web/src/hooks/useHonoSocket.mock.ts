@@ -4,6 +4,7 @@ import type {
   PeerInfo,
   ServerMessage,
 } from "@dip_distributed_llm/shared-types/messages";
+import { randomId } from "../lib/clientId";
 
 /** 開発用パネルから呼ぶ操作。本物の接続では null になる */
 export type SocketDebug = {
@@ -127,10 +128,7 @@ export function useHonoSocketMock({ enabled }: SocketOptions): HonoSocket {
 
   const addPeer = useCallback(
     (displayName: string) => {
-      peers.current = [
-        ...peers.current,
-        { clientId: crypto.randomUUID(), displayName, status: "ready" },
-      ];
+      peers.current = [...peers.current, { clientId: randomId(), displayName, status: "ready" }];
       emitRoster();
       // 新しい人が来ても全員を組み直す方針(異常系を1パターンに保つため)
       emitAborted();

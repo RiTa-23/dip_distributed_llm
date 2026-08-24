@@ -7,6 +7,8 @@ import { Metric, MetricGrid } from "../components/Metric";
 import { DevPanel } from "../components/DevPanel";
 import { useCluster } from "../hooks/useCluster";
 import { getClientId } from "../lib/clientId";
+import { describeMemory, describeWebgpu } from "../lib/environment";
+import { useEnvironment } from "../hooks/useEnvironment";
 import { formatBytes, formatCount } from "../lib/format";
 import { DEFAULT_DISPLAY_NAME, TOTAL_LAYERS } from "../config";
 import type { Phase } from "../types/cluster";
@@ -40,11 +42,14 @@ export function PeerView() {
   const [calls, setCalls] = useState(0);
   const [bytes, setBytes] = useState(0);
   const [myId] = useState(getClientId);
+  const env = useEnvironment();
 
   const { phase } = state;
   const isActive = phase === "active";
-  // 空白だけの名前で参加させない。層バーに名前のない区間ができる
-  const canJoin = displayName.trim().length > 0;
+  // 空白だけの名前で参加させない。層バーに名前のない区間ができる。
+  // secure contextでないときも止める。SharedArrayBuffer・WebGPU・WebRTCが
+  // どれも使えず、参加しても計算できないため
+  const canJoin = env.secureContext && displayName.trim().length > 0;
 
   // 接続できたら名乗る。本物のHonoでも同じ
   useEffect(() => {
@@ -135,10 +140,21 @@ export function PeerView() {
               参加する
             </button>
             <div className={styles.env}>
-              <span>WebGPU 利用可</span>
-              <span>空きメモリ 8 GB</span>
-              <span>secure context 有効</span>
+              <span className={env.webgpu === "no" ? styles.envBad : undefined}>
+                {describeWebgpu(env.webgpu)}
+              </span>
+              <span>{describeMemory(env.memoryGb)}</span>
+              <span className={env.secureContext ? undefined : styles.envBad}>
+                {env.secureContext ? "secure context 有効" : "secure context 無効"}
+              </span>
             </div>
+
+            {!env.secureContext && (
+              <p className={styles.notice}>
+                このページはHTTPSで開かれていないため、計算に参加できません。 主催のPCが配っている{" "}
+                <span className={styles.mono}>https://</span> のURLで開き直してください。
+              </p>
+            )}
           </div>
         )}
 
