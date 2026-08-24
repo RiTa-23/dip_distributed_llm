@@ -18,7 +18,7 @@ bun run dev
 
 | URL | 画面 | 役割 |
 |---|---|---|
-| `/` | 参加者画面 | 計算資源を貸す側。QRの飛び先にする予定 |
+| `/` | 参加者画面 | 計算資源を貸す側。QRの飛び先 |
 | `/requester` | 発表者画面 | 推論をリクエストする側。URLを直打ちする |
 
 本物のHono(`/ws`)へ繋ぐときは、モックを止めて接続先を渡します。
@@ -88,6 +88,7 @@ apps/web/src/
 │   ├── clusterReducer.ts      状態遷移のルール
 │   ├── useCluster.ts          両画面が状態に触る唯一の入口。どちらの接続を使うかもここ
 │   ├── useHonoSocket.ts       本物の /ws への接続(再接続・受信の検証つき)
+│   ├── useJoinUrl.ts          QRに入れる参加URLを /join-info から受け取る
 │   └── useHonoSocket.mock.ts  Honoの代わり。本物と同じ形を返す
 ├── lib/
 │   ├── clientId.ts            localStorageに保存するclientId
@@ -97,10 +98,41 @@ apps/web/src/
 │   └── format.ts              バイト数・件数の表示
 ├── components/                両画面で使う部品。1部品1フォルダ相当
 │   ├── TopBar / StatusBlock / LayerBar / ProgressBar / Metric / DevPanel
+│   ├── JoinQr                 参加者を集めるQR(発表者画面のサイドバー)
 └── views/
     ├── PeerView.tsx
     └── RequesterView.tsx
 ```
+
+## 参加者を集めるQR
+
+発表者画面のサイドバーに出しています([`components/JoinQr.tsx`](../apps/web/src/components/JoinQr.tsx))。QRを押すと投影用の全画面表示に切り替わり、クリックかEscで戻ります。
+
+`preparing` / `waiting` の間は大きく、`active` になったら小さく畳みます。**埋まった後も消しません**(途中参加の導線を残すため)。
+
+### QRに入れるURLはサーバが決める
+
+`window.location.origin` は使えません。発表者が `https://localhost:8443/requester` で開いていると、QRの中身が `https://localhost:8443/` になり、参加者の端末では自分自身を指してしまいます。会場のLAN IPはブラウザからは分からないので、NICを列挙できるHono側に決めさせています。
+
+```text
+GET /join-info  →  { "joinUrls": ["https://192.168.11.5:8443/"] }
+```
+
+割り出しは [`apps/server/src/lanAddress.ts`](../apps/server/src/lanAddress.ts) です。ループバック・非IPv4・リンクローカル(169.254.x)を除き、`192.168.x` → `10.x` → その他の順に並べます(172.16-31 はDocker・WSL2・Hyper-Vの仮想NICが使うため後ろ)。候補が2つ以上返ったときは画面にプルダウンが出るので、発表者が選び直せます。
+
+WebSocketメッセージにしていないのは、QRが接続確立より前に必要で、`packages/shared-types` の契約を増やすと `docs/api-contract.md` の更新義務が付いてくるからです。単発のGETで足ります。
+
+viteのdevサーバ単体(5173)では `/join-info` が無いため、今開いているオリジンへ黙って落ちます。dev中に本物のLAN IPで試すときだけ上書きしてください。
+
+```bash
+VITE_JOIN_INFO_URL=https://localhost:8443/join-info bun run dev
+```
+
+### 証明書の警告は消せない
+
+mkcertのローカルCAは飛び入り参加者の端末に入っていないため、QRを読んだ端末には必ず警告が出ます。SharedArrayBufferにHTTPSが要る以上、HTTPへ逃げる手もありません。通過手順(「詳細設定」→「アクセスする」)をQRの近くに出して、警告ごと受け入れる方針にしています。警告ゼロ化は#23の宿題です。
+
+**`apps/server/scripts/gen-cert.sh` のLAN IP取得はmacOS前提**(`route -n get default` / `ipconfig getifaddr`)で、Windowsでは空になります。この状態だとQRで配るIPが証明書のSANに入りません。発表者PCがWindowsになる場合は、そのIPを明示して証明書を再発行してください。
 
 ## 書くときの決まりごと
 
@@ -202,6 +234,5 @@ Honoの代わりに最小のWSサーバを立てて、`hello` → `roster_update
 
 ## 次にやること
 
-1. QRコードの表示(参加者を集める導線)
-2. ②の `/ws` 完成後に、`USE_MOCK_SOCKET` の既定を本物側へ倒して実機で確認する
-3. WebRTCのシグナリング(`webrtc_signal` の送受信。②の #19 の完成後)
+1. ②の `/ws` 完成後に、`USE_MOCK_SOCKET` の既定を本物側へ倒して実機で確認する
+2. WebRTCのシグナリング(`webrtc_signal` の送受信。②の #19 の完成後)

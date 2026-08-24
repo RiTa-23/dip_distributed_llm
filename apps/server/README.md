@@ -42,12 +42,16 @@ bun run dev
 
 | パス | 配信元 | 備考 |
 |---|---|---|
+| `/join-info` | (NICから生成) | 参加者に配るURLの候補。発表者画面のQRの中身(#28) |
 | `/models/*` | `public/models/` | GGUF。無ければ 404 |
 | `/wasm/*` | `public/wasm/`(①の成果物) | WASM/グルーコード。無ければ 404 |
 | `/*` | `public/web-dist/` | React成果物 |
 | 未知パス | `public/web-dist/index.html` | SPA フォールバック(例: `/requester` 直開き) |
 
 全レスポンスに COOP/COEP(`same-origin` / `require-corp`)を付与(#13)。
+
+`/join-info` は `os.networkInterfaces()` から会場LANのIPv4を割り出して返す([`src/lanAddress.ts`](src/lanAddress.ts))。ブラウザからは自分のLAN IPが分からず、`window.location.origin` をQRに入れると発表者が localhost で開いた場合に壊れるため。
+候補は `192.168.x` → `10.x` → その他の順(172.16-31 は仮想NICが混ざるため後ろ)。
 
 ## 本番デモの証明書について
 

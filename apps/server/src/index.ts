@@ -1,8 +1,19 @@
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { existsSync } from "node:fs";
+import { networkInterfaces } from "node:os";
+import { buildJoinUrls } from "./lanAddress";
 
 const app = new Hono();
+
+// --- TLS(#14 開発用: mkcert) ---
+// 証明書があれば HTTPS、無ければ HTTP で起動(CI・クイック確認用)。
+// フロント・/ws・モデルを 1 つの HTTPS オリジンから配信する(単一オリジン)。
+// 本番デモの警告ゼロ化(飛び入り参加者向け)は別途 #23 で対応する。
+const CERT = "./certs/cert.pem";
+const KEY = "./certs/key.pem";
+const hasTls = existsSync(CERT) && existsSync(KEY);
+const port = Number(process.env.PORT ?? (hasTls ? 8443 : 3000));
 
 // すべてのレスポンスに COOP/COEP を付与する(#13)。
 // WASM版llama.cppがpthread(SharedArrayBuffer)を使うため cross-origin isolation が必須。
@@ -20,6 +31,14 @@ app.use("*", async (c, next) => {
 app.get("/ws", (c) => c.notFound());
 app.get("/ws/*", (c) => c.notFound());
 
+// --- 参加URLの配布(#28) ---
+// 発表者画面のQRに入れるURL。ブラウザからは会場のLAN IPが分からないため、
+// サーバが自分のNICから割り出して渡す。/ws と同じ理由で静的配信より前に置く。
+// WebSocketメッセージにしないのは、QRが接続確立より前に必要になるため(docs/frontend.md)。
+app.get("/join-info", (c) =>
+  c.json({ joinUrls: buildJoinUrls(networkInterfaces(), hasTls ? "https" : "http", port) }),
+);
+
 // --- 静的配信(#12) ---
 // マウント順が重要: models / wasm を先に処理し、最後に web-dist(SPA)へフォールバックする。
 // モデル(GGUF)・WASMグルーコードは ./public から配信。
@@ -35,15 +54,6 @@ app.use("/*", serveStatic({ root: "./public/web-dist" }));
 // SPA フォールバック(#15)。未知パス(例: /requester 直開き)は index.html を返す。
 // /models・/wasm は上で処理済みなのでここには来ない。
 app.get("*", serveStatic({ path: "./public/web-dist/index.html" }));
-
-// --- TLS(#14 開発用: mkcert) ---
-// 証明書があれば HTTPS、無ければ HTTP で起動(CI・クイック確認用)。
-// フロント・/ws・モデルを 1 つの HTTPS オリジンから配信する(単一オリジン)。
-// 本番デモの警告ゼロ化(飛び入り参加者向け)は別途 #23 で対応する。
-const CERT = "./certs/cert.pem";
-const KEY = "./certs/key.pem";
-const hasTls = existsSync(CERT) && existsSync(KEY);
-const port = Number(process.env.PORT ?? (hasTls ? 8443 : 3000));
 
 console.log(
   `Hono server listening on ${hasTls ? "https" : "http"}://localhost:${port} (tls=${hasTls})`,
