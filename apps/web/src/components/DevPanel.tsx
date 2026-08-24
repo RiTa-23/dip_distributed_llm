@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { ALL_PHASES } from "../types/cluster";
 import type { Phase } from "../types/cluster";
-import type { SocketDebug } from "../hooks/useHonoSocket.mock";
+import type { SocketDebug } from "../types/socket";
 import styles from "./DevPanel.module.css";
 
 type Props = {
