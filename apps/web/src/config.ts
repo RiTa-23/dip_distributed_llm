@@ -19,6 +19,15 @@ export const DEFAULT_DISPLAY_NAME = "参加者のPC";
 export const WS_URL_OVERRIDE: string = String(import.meta.env.VITE_HONO_WS_URL ?? "");
 
 /**
+ * 参加URLをHonoに問い合わせるパス。QRの中身になる(サーバの `/join-info`)。
+ *
+ * 常に同一オリジンへ投げる。別オリジンのHonoを直接叩くとCORSで弾かれるため、
+ * dev中に本物のLAN IPで試したいときは vite.config.ts のプロキシを使う。
+ *   例: VITE_HONO_ORIGIN=https://localhost:8443 bun run dev
+ */
+export const JOIN_INFO_PATH = "/join-info";
+
+/**
  * 制御プレーンをモックで動かすかどうか。
  *
  * Honoの `/ws` はまだ404を返すスタブなので、既定はモックのまま。

@@ -3,6 +3,7 @@ import { TopBar } from "../components/TopBar";
 import { LayerBar } from "../components/LayerBar";
 import { ProgressBar } from "../components/ProgressBar";
 import { DevPanel } from "../components/DevPanel";
+import { JoinQr } from "../components/JoinQr";
 import { useCluster } from "../hooks/useCluster";
 import { getClientId } from "../lib/clientId";
 import { MODEL_NAME, TOTAL_LAYERS } from "../config";
@@ -127,6 +128,9 @@ export function RequesterView() {
 
       <div className={styles.body}>
         <aside className={styles.sidebar}>
+          {/* 参加者がそろうまでは大きく、埋まった後も途中参加の導線として残す */}
+          <JoinQr emphasized={phase === "idle" || phase === "preparing" || phase === "waiting"} />
+
           <div>
             <div className={styles.sectionLabel}>PEERS</div>
             <div className={styles.peers}>
