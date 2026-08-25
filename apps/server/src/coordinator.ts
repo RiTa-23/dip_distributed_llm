@@ -41,6 +41,10 @@ export class Coordinator {
     this.run(roster.applyPeerStatus(this.state, clientId, status));
   }
 
+  requesterAccepting(clientId: string, accepting: boolean): void {
+    this.run(roster.applyRequesterAccepting(this.state, clientId, accepting));
+  }
+
   signal(msg: WebrtcSignalMessage): void {
     this.run(roster.applySignal(this.state, msg));
   }

@@ -33,7 +33,19 @@ export type WebrtcSignalMessage = {
   payload: { kind: SignalKind; sdp?: string; candidate?: unknown };
 };
 
-export type ClientMessage = HelloMessage | PeerStatusMessage | WebrtcSignalMessage;
+export type RequesterAcceptingMessage = {
+  // requesterのみ送信可。生成中に新規peerが加入してきた際、Honoが自動で
+  // 再編成してよいかを伝える。falseの間は加入を保留し、trueに戻した瞬間に
+  // まとめて1回だけ再編成する(推論中に再編成が割り込むのを防ぐデバウンス)
+  type: "requester_accepting";
+  accepting: boolean;
+};
+
+export type ClientMessage =
+  | HelloMessage
+  | PeerStatusMessage
+  | WebrtcSignalMessage
+  | RequesterAcceptingMessage;
 
 // ---------- サーバ → クライアント ----------
 export type RosterUpdateMessage = {
@@ -51,7 +63,9 @@ export type GenerationStartMessage = {
 export type GenerationAbortedMessage = {
   type: "generation_aborted";
   generation: number;
-  reason: "peer_disconnected";
+  // peer_disconnected: 既存peerの切断で編成が壊れた
+  // peer_joined: 生成中に新規peerがreadyになり、Honoが能動的に組み直した(acceptingGrowth時)
+  reason: "peer_disconnected" | "peer_joined";
   message: string;
 };
 

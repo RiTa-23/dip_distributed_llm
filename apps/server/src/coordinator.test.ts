@@ -119,4 +119,42 @@ describe("Coordinator wiring", () => {
     co.hello("p1", "peer", "P1", fakeSocket());
     expect(typesOf(req)).toContain("generation_aborted");
   });
+
+  test("requesterAccepting: requesterがfalseにすると新規peerのreadyで再編成されない", () => {
+    const co = new Coordinator();
+    const req = fakeSocket();
+    const p1 = fakeSocket();
+    co.hello("req", "requester", "発表者", req);
+    co.hello("p1", "peer", "P1", p1);
+    co.peerStatus("p1", "ready"); // gen 1 開始
+
+    co.requesterAccepting("req", false);
+    req.sent.length = 0;
+    const p2 = fakeSocket();
+    co.hello("p2", "peer", "P2", p2);
+    co.peerStatus("p2", "ready");
+    expect(typesOf(req)).not.toContain("generation_aborted");
+
+    // trueに戻すと取り込まれる
+    co.requesterAccepting("req", true);
+    expect(typesOf(req)).toContain("generation_aborted");
+    expect(typesOf(req)).toContain("generation_start");
+  });
+
+  test("requesterAccepting: peerが送っても無視される", () => {
+    const co = new Coordinator();
+    const req = fakeSocket();
+    const p1 = fakeSocket();
+    co.hello("req", "requester", "発表者", req);
+    co.hello("p1", "peer", "P1", p1);
+    co.peerStatus("p1", "ready"); // gen 1 開始
+
+    co.requesterAccepting("p1", false); // p1はpeerなので無視されるべき
+    req.sent.length = 0;
+    const p2 = fakeSocket();
+    co.hello("p2", "peer", "P2", p2);
+    co.peerStatus("p2", "ready");
+    // 無視されていれば既定trueのままなので、通常通り再編成される
+    expect(typesOf(req)).toContain("generation_aborted");
+  });
 });

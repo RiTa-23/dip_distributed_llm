@@ -66,4 +66,20 @@ describe("parseClientMessage", () => {
       payload: { kind: "offer", sdp: "v=0..." },
     });
   });
+
+  test("requester_accepting: acceptingがboolean以外なら null", () => {
+    expect(parseClientMessage({ type: "requester_accepting" })).toBeNull();
+    expect(parseClientMessage({ type: "requester_accepting", accepting: "true" })).toBeNull();
+  });
+
+  test("requester_accepting: 妥当なら通す", () => {
+    expect(parseClientMessage({ type: "requester_accepting", accepting: false })).toEqual({
+      type: "requester_accepting",
+      accepting: false,
+    });
+    expect(parseClientMessage({ type: "requester_accepting", accepting: true })).toEqual({
+      type: "requester_accepting",
+      accepting: true,
+    });
+  });
 });

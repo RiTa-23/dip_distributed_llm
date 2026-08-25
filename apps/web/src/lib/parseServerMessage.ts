@@ -11,6 +11,10 @@ import type {
 
 const PEER_STATUSES = ["connecting", "ready", "error"] as const satisfies readonly PeerStatus[];
 const SIGNAL_KINDS = ["offer", "answer", "ice-candidate"] as const satisfies readonly SignalKind[];
+const ABORT_REASONS = [
+  "peer_disconnected",
+  "peer_joined",
+] as const satisfies readonly GenerationAbortedMessage["reason"][];
 
 type JsonObject = Record<string, unknown>;
 
@@ -58,11 +62,11 @@ function toGenerationStart(v: JsonObject): GenerationStartMessage | null {
 
 function toGenerationAborted(v: JsonObject): GenerationAbortedMessage | null {
   if (!isNumber(v.generation)) return null;
-  if (v.reason !== "peer_disconnected" || !isString(v.message)) return null;
+  if (!isMember(ABORT_REASONS, v.reason) || !isString(v.message)) return null;
   return {
     type: "generation_aborted",
     generation: v.generation,
-    reason: "peer_disconnected",
+    reason: v.reason,
     message: v.message,
   };
 }
