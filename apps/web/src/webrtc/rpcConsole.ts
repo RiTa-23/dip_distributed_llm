@@ -39,6 +39,9 @@ declare global {
 /** コンソールに口を生やす。戻り値を呼ぶと片付く */
 export function installRpcConsole(manager: WebrtcPeerManager): () => void {
   let server: StubServer | null = null;
+  // 走っている最中にもう1回叩かれたら断る。2回目の connect が1回目の論理接続を
+  // 畳んでしまい(peerManager の connect)、走っていたほうが途中で失敗するため
+  let checking = false;
 
   const api: RpcConsole = {
     remotes: () => manager.remoteIds(),
@@ -52,14 +55,20 @@ export function installRpcConsole(manager: WebrtcPeerManager): () => void {
     },
 
     check: async (options = {}) => {
+      if (checking) throw new Error("前のチェックがまだ走っています");
       const nodeId = options.nodeId ?? manager.remoteIds()[0];
       if (!nodeId) throw new Error("繋がっている相手がいません");
       const size = (options.sizeMiB ?? 8) * 1024 * 1024;
-      const result = await runStubClient(manager, nodeId, { size, rounds: options.rounds ?? 1 });
-      const mbps =
-        result.ms > 0 ? (result.bytes / 1024 / 1024 / (result.ms / 1000)).toFixed(1) : "-";
-      console.info(`[rpc] ${nodeId} と往復しました: ${String(result.ms)}ms (${mbps} MiB/s)`);
-      return result;
+      checking = true;
+      try {
+        const result = await runStubClient(manager, nodeId, { size, rounds: options.rounds ?? 1 });
+        const mbps =
+          result.ms > 0 ? (result.bytes / 1024 / 1024 / (result.ms / 1000)).toFixed(1) : "-";
+        console.info(`[rpc] ${nodeId} と往復しました: ${String(result.ms)}ms (${mbps} MiB/s)`);
+        return result;
+      } finally {
+        checking = false;
+      }
     },
 
     stop: () => {

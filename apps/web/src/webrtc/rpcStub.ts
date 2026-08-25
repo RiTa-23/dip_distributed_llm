@@ -129,17 +129,41 @@ export type StubServer = {
 };
 
 /**
+ * 同じPeerManagerに対して立てたサーバ。
+ *
+ * **1つのPeerManagerにつきaccept待ちのループは1本だけにする。** `accept` の待機を
+ * 途中で取り消す手段は契約に無いため(`peerManager.close()` が待機を持ち越す理由と
+ * 同じ)、止めるたびにループを捨てて立て直すと、捨てたループの待機が先頭に居座る。
+ * 次のCONNECTはその待機に渡ってACCEPTEDまで返るのに、fdを受け取る者がいない。
+ * 相手は繋がったつもりで送り続け、誰も読まないまま止まる。
+ */
+type ServerState = {
+  handle: StubServer;
+  /** 止めたあとに立て直すとき。ループは作らず、状態だけ戻す */
+  resume: (onEvent: (message: string) => void) => void;
+};
+
+const servers = new WeakMap<LlamaPeerManager, ServerState>();
+
+/**
  * サーバ役(peer側)。届いたぶんを加工して返し続ける。
  *
- * 止めても `accept` の待機は残る。llama.cppのRPCサーバも同じで、待機を
- * 取り消す手段は契約に無い(`peerManager.close()` が持ち越す理由と同じ)。
+ * 同じPeerManagerに対して2回目以降を呼ぶと、最初のループを使い回す。
+ * 止めているあいだに来た接続は、放置せずその場で畳む(相手を待たせないため)。
  */
 export function startStubServer(
   pm: LlamaPeerManager,
   onEvent: (message: string) => void = () => {},
 ): StubServer {
-  let stopped = false;
+  const existing = servers.get(pm);
+  if (existing) {
+    existing.resume(onEvent);
+    return existing.handle;
+  }
+
+  let serving = true;
   let served = 0;
+  let notify = onEvent;
 
   const serve = async (fd: number) => {
     // 1本の論理接続で複数のやり取りを捌く。相手が閉じたら抜ける
@@ -152,35 +176,50 @@ export function startStubServer(
       await sendAll(pm, fd, writeHeader(length));
       await sendAll(pm, fd, reply);
       served += 1;
-      onEvent(`${String(length)}バイトを返しました`);
+      notify(`${String(length)}バイトを返しました`);
     }
   };
 
+  // 抜けない。抜けると待機を捨てることになる(上の説明)
   const loop = async () => {
-    while (!stopped) {
+    for (;;) {
       const fd = await acceptOnce(pm);
-      if (stopped) return;
       if (fd < 0) {
-        onEvent("acceptが失敗しました");
+        notify("acceptが失敗しました");
+        continue;
+      }
+      if (!serving) {
+        // 止めているあいだの接続。ACCEPTEDは既に返っているので、畳んで相手に知らせる
+        pm.close_connection(fd);
         continue;
       }
       try {
         await serve(fd);
       } catch (e: unknown) {
         // 相手が閉じた・世代が変わった。次の着信を待ち直す
-        onEvent(e instanceof Error ? e.message : String(e));
+        notify(e instanceof Error ? e.message : String(e));
       }
     }
   };
 
-  void loop();
-
-  return {
+  const handle: StubServer = {
     served: () => served,
     stop: () => {
-      stopped = true;
+      serving = false;
     },
   };
+
+  servers.set(pm, {
+    handle,
+    resume: (next) => {
+      notify = next;
+      serving = true;
+    },
+  });
+
+  void loop();
+
+  return handle;
 }
 
 export type StubClientOptions = {

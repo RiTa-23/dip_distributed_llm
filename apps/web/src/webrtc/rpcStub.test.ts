@@ -134,3 +134,32 @@ describe("WASMの代役でのRPC", () => {
     pair.stop();
   });
 });
+
+describe("待ち受けの止め方", () => {
+  test("stopのあとにserveし直しても、次の接続を捌ける", async () => {
+    // 止めるたびにループを立て直すと、捨てたループのaccept待ちが先頭に居座り、
+    // 次のCONNECTがそこへ渡って誰も読まないまま止まる
+    const pair = createDirectPair();
+    const first = startStubServer(pair.peer);
+    expect((await runStubClient(pair.requester, PEER_ID, { size: 4096 })).ok).toBe(true);
+    first.stop();
+
+    const second = startStubServer(pair.peer);
+    expect((await runStubClient(pair.requester, PEER_ID, { size: 4096 })).ok).toBe(true);
+    expect(second.served()).toBe(2);
+
+    second.stop();
+    pair.stop();
+  });
+
+  test("止めているあいだの接続は畳んで返す(相手を待たせない)", async () => {
+    const pair = createDirectPair();
+    const server = startStubServer(pair.peer);
+    server.stop();
+
+    // ACCEPTEDは返るがfdを受け取る者がいない。放置せず畳むので、相手は待ち続けない
+    await expect(runStubClient(pair.requester, PEER_ID, { size: 4096 })).rejects.toThrow();
+
+    pair.stop();
+  });
+});
