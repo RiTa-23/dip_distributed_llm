@@ -7,6 +7,7 @@ import { JoinQr } from "../components/JoinQr";
 import { useCluster } from "../hooks/useCluster";
 import { useWebrtcSignaling } from "../hooks/useWebrtcSignaling";
 import { usePeerManager } from "../hooks/usePeerManager";
+import type { GenerationEvent } from "../hooks/usePeerManager";
 import { getClientId } from "../lib/clientId";
 import { MODEL_NAME, TOTAL_LAYERS } from "../config";
 import type { Phase } from "../types/cluster";
@@ -27,6 +28,12 @@ const DUMMY_ANSWER =
   "1つのモデルを層ごとに分けて、複数のPCが順番に計算を受け持つしくみです。" +
   "参加するPCが増えるほど、1台では載りきらない大きなモデルが動かせます。";
 
+const PEER_STATUS_LABEL: Record<string, string> = {
+  connecting: "接続中",
+  ready: "準備完了",
+  error: "エラー",
+};
+
 export function RequesterView() {
   const { state, dispatch, send, lastMessage, assignments, debug } = useCluster({ enabled: true });
   const [modelProgress, setModelProgress] = useState(0);
@@ -36,14 +43,36 @@ export function RequesterView() {
   const [computingIndex, setComputingIndex] = useState<number | null>(null);
   const [input, setInput] = useState("分散推論のしくみを一言で教えて");
   const timer = useRef<number | null>(null);
+  const streamingRef = useRef("");
+  const toastTimer = useRef<number | null>(null);
+  const previousRosterSize = useRef(state.roster.length);
+  const [toast, setToast] = useState<string | null>(null);
   const [myId] = useState(() => getClientId("requester"));
 
   const { phase } = state;
+
+  const receiveGenerationEvent = (event: GenerationEvent) => {
+    if (event.type === "token") {
+      streamingRef.current += event.token;
+      setStreaming(streamingRef.current);
+      setGenerating(true);
+      return;
+    }
+
+    setGenerating(false);
+    setComputingIndex(null);
+    if (streamingRef.current) {
+      setChat((c) => [...c, { role: "assistant", text: streamingRef.current }]);
+    }
+    streamingRef.current = "";
+    setStreaming("");
+  };
 
   // 各peerとのDataChannelの上でRPCを話す側(RPCクライアント役)。
   // ①のWASMが起動したら `Module.PeerManager = rpc.manager` で載せる
   const rpc = usePeerManager({
     onError: (message) => dispatch({ type: "failed", message }),
+    onGenerationEvent: receiveGenerationEvent,
   });
 
   // generation_start の顔ぶれ全員へofferを出す。フェーズの判断はしない
@@ -93,9 +122,36 @@ export function RequesterView() {
     }
   }, [phase, rtc.status, dispatch]);
 
+  useEffect(() => {
+    const currentSize = state.roster.length;
+    const previousSize = previousRosterSize.current;
+    previousRosterSize.current = currentSize;
+    if (currentSize === previousSize) return;
+
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast(`${previousSize}台→${currentSize}台に更新`);
+    toastTimer.current = window.setTimeout(() => setToast(null), 3200);
+  }, [state.roster.length]);
+
+  useEffect(() => {
+    if (!lastMessage) return;
+    const message =
+      lastMessage.type === "generation_start"
+        ? "編成が完了しました"
+        : lastMessage.type === "generation_aborted"
+          ? lastMessage.message
+          : null;
+    if (!message) return;
+
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast(message);
+    toastTimer.current = window.setTimeout(() => setToast(null), 3200);
+  }, [lastMessage]);
+
   useEffect(
     () => () => {
       if (timer.current) clearInterval(timer.current);
+      if (toastTimer.current) clearTimeout(toastTimer.current);
     },
     [],
   );
@@ -104,20 +160,18 @@ export function RequesterView() {
     if (!canSubmit || !input.trim()) return;
     setChat((c) => [...c, { role: "user", text: input }]);
     setInput("");
+    streamingRef.current = "";
     setStreaming("");
     setGenerating(true);
     let i = 0;
     timer.current = window.setInterval(() => {
       i += 1;
-      setStreaming(DUMMY_ANSWER.slice(0, i));
+      receiveGenerationEvent({ type: "token", token: DUMMY_ANSWER[i - 1] ?? "" });
       // 1トークンぶんの計算が全ピアを一周する見え方にする
       setComputingIndex(Math.floor(i / 12) % Math.max(1, assignments.length));
       if (i >= DUMMY_ANSWER.length) {
         if (timer.current) clearInterval(timer.current);
-        setGenerating(false);
-        setComputingIndex(null);
-        setStreaming("");
-        setChat((c) => [...c, { role: "assistant", text: DUMMY_ANSWER }]);
+        receiveGenerationEvent({ type: "generation_end" });
       }
     }, 45);
   };
@@ -150,17 +204,24 @@ export function RequesterView() {
           <div>
             <div className={styles.sectionLabel}>PEERS</div>
             <div className={styles.peers}>
-              {assignments.map((a) => {
-                const peer = state.roster.find((p) => p.clientId === a.clientId);
-                const isComputing = a.clientId === computingClientId;
+              {state.roster.map((peer) => {
+                const assignment = assignments.find((a) => a.clientId === peer.clientId);
+                const isComputing = peer.clientId === computingClientId;
                 return (
                   <div
-                    key={a.clientId}
-                    className={`${styles.peerRow} ${isComputing ? styles.computing : ""}`}
+                    key={peer.clientId}
+                    className={`${styles.peerRow} ${styles[peer.status]} ${isComputing ? styles.computing : ""}`}
                   >
-                    <span className={styles.peerName}>{peer?.displayName ?? a.clientId}</span>
+                    <span className={styles.peerName}>
+                      <span className={styles.statusDot} aria-hidden="true" />
+                      {peer.displayName}
+                    </span>
                     <span className={styles.peerRange}>
-                      第{a.startLayer}〜{a.endLayer}層{isComputing ? " · 計算中" : ""}
+                      {PEER_STATUS_LABEL[peer.status]}
+                      {assignment
+                        ? ` · 第${assignment.startLayer}〜${assignment.endLayer}層`
+                        : ""}
+                      {isComputing ? " · 計算中" : ""}
                     </span>
                     <span className={styles.peerBar} />
                   </div>
@@ -199,6 +260,11 @@ export function RequesterView() {
         </aside>
 
         <section className={styles.chat}>
+          {toast && (
+            <div className={styles.toast} role="status">
+              {toast}
+            </div>
+          )}
           {notice && <div className={styles.notice}>{notice}</div>}
           <div className={styles.log}>
             {chat.map((m, i) => (

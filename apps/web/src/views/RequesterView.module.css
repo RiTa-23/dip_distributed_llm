@@ -40,6 +40,29 @@
 
 .peerName {
   font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.statusDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--c-text-dim);
+}
+
+.connecting .statusDot {
+  background: var(--c-warn);
+}
+
+.ready .statusDot {
+  background: var(--c-active);
+}
+
+.error .statusDot {
+  background: var(--c-danger);
 }
 
 .peerRange {
@@ -131,6 +154,35 @@
   border-radius: var(--radius);
   font-size: 13px;
   color: var(--c-active);
+}
+
+.toast {
+  align-self: center;
+  margin-top: 14px;
+  padding: 8px 14px;
+  border: 1px solid var(--c-active);
+  border-radius: 999px;
+  color: var(--c-active);
+  background: var(--c-surface-1);
+  font-size: 13px;
+  animation: toast-in 180ms ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
 }
 
 .mono {
