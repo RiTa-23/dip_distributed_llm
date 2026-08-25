@@ -131,7 +131,8 @@ export const MAX_RECV_QUEUE_BYTES = 256 * 1024 * 1024;
 /**
  * 送信を止める水位。`channel.bufferedAmount` がこれ以上あるうちは書き込まない。
  *
- * Chromeは送信バッファが上限(16MiB前後)を超えるとDataChannelごと落とす。
+ * Chromeは `bufferedAmount` が16MiBに達すると `send()` が OperationError を投げる
+ * (Chrome 141で実測。チャンネル自体は開いたまま残り、投げられたフレームだけが落ちる)。
  * llama.cppは `send_peer` 1回で大きなテンソルを丸ごと渡してくるため、
  * 何も見ずに書き続けると本番のモデル配布でここを踏む。
  */

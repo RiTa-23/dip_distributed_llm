@@ -210,7 +210,7 @@ llama.cppのC側はソケットの開閉を頻繁に繰り返しますが、1本
 
 ### 送信の水位(バックプレッシャー)
 
-**書き込む前に必ず `bufferedAmount` を見ます。** Chromeは送信バッファが上限(16MiB前後)を超えるとDataChannelごと落とすため、llama.cppが `send_peer` 1回で渡してくる大きなテンソルをそのまま書き続けると、本番のモデル配布で真っ先にここを踏みます。
+**書き込む前に必ず `bufferedAmount` を見ます。** Chromeは `bufferedAmount` が16MiBに達すると `send()` が `OperationError: RTCDataChannel send queue is full` を投げます(Chrome 141で実測。チャンネル自体は開いたまま残り、投げられたフレームだけが落ちます)。llama.cppが `send_peer` 1回で渡してくる大きなテンソルをそのまま書き続けると、本番のモデル配布で真っ先にここを踏みます。
 
 - 8MiB(`SEND_HIGH_WATER`)以上溜まっているあいだは書かず、回線ごとのキューへ積みます
 - 再開は `bufferedamountlow`(閾値4MiB)で拾います。イベントを持たない相手のために50ms間隔の見直しも併走させ、止まっているあいだだけ回します
