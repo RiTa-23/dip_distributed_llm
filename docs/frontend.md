@@ -5,8 +5,8 @@
 ## 3行でいうと
 
 - **画面は2つ。URLのパスだけで役割が決まる**(入口で選ばせる画面は作らない)
-- **今は全部ダミーで動く**。Honoが未完成でも、参加から貢献中までの流れが最後まで再現できる
-- **本物のWebSocketクライアントは実装済み**。モックとの切り替えは環境変数1つ
+- **制御プレーンは本物のHonoに繋がっている**(2026/8/25に既定を切り替えた)。Honoを起動せずに見た目だけ試したいときはモックへ戻せる
+- **データプレーン(WebRTC)はまだ無い**。モデルの受信・生成・処理量は今もダミーで動く
 
 ## 動かし方
 
@@ -21,13 +21,19 @@ bun run dev
 | `/` | 参加者画面 | 計算資源を貸す側。QRの飛び先 |
 | `/requester` | 発表者画面 | 推論をリクエストする側。URLを直打ちする |
 
-本物のHono(`/ws`)へ繋ぐときは、モックを止めて接続先を渡します。
+既定で本物のHono(`/ws`)へ繋ぎます。接続先は**画面を開いているオリジン**です。Honoがフロントごと配っている(`bun run --cwd apps/server dev` で `:3000` / `:8443` を開く)場合はこれだけで繋がります。
+
+viteのdevサーバ(`:5173`)とHonoを別々に動かすときは、Honoのオリジンを渡してください。`/ws` と `/join-info` の両方がプロキシされます。
 
 ```bash
-VITE_MOCK_SOCKET=0 VITE_HONO_WS_URL=wss://localhost:8443/ws bun run dev
+VITE_HONO_ORIGIN=http://localhost:3000 bun run dev
 ```
 
-同じオリジンから配信されている(Honoがフロントごと配る)場合は `VITE_HONO_WS_URL` は要りません。省略すると画面を開いているオリジンへ繋ぎます。
+Honoを起動せずに見た目だけ触りたいときは、モックへ戻します。
+
+```bash
+VITE_MOCK_SOCKET=1 bun run dev
+```
 
 画面の下端に **開発用パネル** が出ます(本番ビルドでは出ません)。
 
@@ -36,7 +42,9 @@ VITE_MOCK_SOCKET=0 VITE_HONO_WS_URL=wss://localhost:8443/ws bun run dev
 
 **「ピアを抜く」を押すと再編成が起きます。** ここがフロントで一番作り込みが要る箇所なので、何度でも試せるようにしてあります。
 
-`ROSTER` のボタンはモックのときだけ出ます。本物の接続では出す相手がいないので消えます。
+`ROSTER` のボタンはモックのときだけ出ます。本物の接続では出す相手がいないので消えます。**既定が本物になったので、再編成の見た目をボタンで試したいときは `VITE_MOCK_SOCKET=1` を付けてください。**
+
+本物で再編成を起こすには、参加者のタブを2つ開いて片方で「離脱する」を押します。同じブラウザで `/` と `/requester` を並べて開くのは問題ありません(clientIdは役割ごとに別のキーで保存しています。下記)。
 
 ## 画面が通る7つの状態
 
@@ -92,7 +100,7 @@ apps/web/src/
 │   │                          (応答の検証は lib/joinInfo.ts)
 │   └── useHonoSocket.mock.ts  Honoの代わり。本物と同じ形を返す
 ├── lib/
-│   ├── clientId.ts            localStorageに保存するclientId
+│   ├── clientId.ts            localStorageに保存するclientId(役割ごとに別キー)
 │   ├── assignments.ts         層の割り当ての仮置き(表示専用)
 │   ├── parseServerMessage.ts  受信JSONの検証。契約に合わないフレームは捨てる
 │   ├── wsUrl.ts               接続先URLの組み立て
@@ -181,7 +189,7 @@ const { state, dispatch, send, assignments, debug } = useCluster({ enabled: true
 
 `src/hooks/useHonoSocket.ts` が本物です。返り値の形はモックと同じなので、**ビューは1行も変わりません。**
 
-切り替えは `config.ts` の `USE_MOCK_SOCKET`(環境変数 `VITE_MOCK_SOCKET`)1か所です。②の `/ws`(#16〜#19)が入るまでの既定はモックのままにしてあります。入ったら既定を本物側へ倒してください。
+切り替えは `config.ts` の `USE_MOCK_SOCKET`(環境変数 `VITE_MOCK_SOCKET`)1か所です。②の `/ws`(#16〜#19)がマージされたので、**2026/8/25に既定を本物側へ倒しました**。モックはまだ消していません(Honoを起動せずに再編成の見た目を確認する用途と、DevPanelのROSTERボタンがモック側にしかないため)。
 
 このフックが持つのは接続と受け渡しだけで、フェーズの判断はしません。判断は今までどおり `clusterReducer.ts` に閉じています。作り込んであるのは次の3点です。
 
@@ -191,7 +199,19 @@ const { state, dispatch, send, assignments, debug } = useCluster({ enabled: true
 | 自動再接続(指数バックオフ、上限4秒) | ②がサーバを再起動しても、会場で参加者に「リロードしてください」と言って回らずに済む。切れているあいだは `idle` に戻り、戻ってきたら `hello` から名乗り直す |
 | 受信を1件ずつ流す | 同じtickで2件届くと後の1件しか観測されない。モックが `FRAME_MS` を挟んでいるのと同じ理由 |
 
-Honoの代わりに最小のWSサーバを立てて、`hello` → `roster_update` → `generation_start` → 切断 → 自動再接続まで確認済みです(2026/8/25)。
+### 実機で確認したこと(2026/8/25)
+
+本物のHono(`:3000`、フロントごと同一オリジンで配信)に対して、参加者と発表者を並べて開き、次の流れを通しました。
+
+1. 発表者が `hello` → 参加者が `hello` → 両方に `roster_update` が届く
+2. 参加者の準備完了(`peer_status: ready`)で `generation_start` が飛び、両画面が受信中→稼働中へ進む
+3. 参加者が「離脱する」→ 発表者に `generation_aborted` が届き再編成中へ
+4. 参加者が再参加 → 次の世代が始まり、両画面が稼働中へ戻る
+5. Honoを再起動 → 両画面が自動で繋ぎ直し、`hello` から名乗り直して編成が復帰する
+
+**このとき見つけて直した不具合**: `clientId` を両画面で1つのキーに保存していたため、同じブラウザで `/` と `/requester` を開くと両者が同じIDを名乗っていました。Honoはこれを「同一clientIdの張り替え(リロード)」と解釈して先に繋いだ側のソケットを捨てるので、発表者がロスターを受け取れず、`generation_start` も発火しません(requesterが居ない扱いになるため)。保存キーを役割ごとに分けて解決しています([`lib/clientId.ts`](../apps/web/src/lib/clientId.ts))。
+
+会場では発表者と参加者が別の端末なので本番のデモは踏みませんが、**1台で両方を開いて検証する経路は必ず踏みます**。
 
 ## 分担
 
@@ -207,8 +227,8 @@ Honoの代わりに最小のWSサーバを立てて、`hello` → `roster_update
 
 ### ②(Honoサーバ)へ
 
-1. **`generation_start` を発火させる条件(#17)。** これが呼ばれないとフロントは `waiting` から一切進めません
-2. **新しい参加者が来たときも再編成してください。** フロントは「増えても減っても全員で組み直す」前提で作ってあります(異常系を1パターンに保つため)。#18 は切断時にしか `generation_aborted` を送らない読みなので、すり合わせたい点です
+1. ~~**`generation_start` を発火させる条件(#17)。**~~ 入りました(`roster.ts` の `maybeStartGeneration`)。実機で確認済みです
+2. **新しい参加者が来たときも再編成してください。** フロントは「増えても減っても全員で組み直す」前提で作ってあります(異常系を1パターンに保つため)。今の `roster.ts` は生成中(`phase === "active"`)に `hello` が来ても `generation_aborted` を出さず、`maybeStartGeneration` も空を返すので、**あとから来た参加者は誰かが切断するまで待機中で取り残されます**。会場で人が増えていく見せ方をするなら、ここが要ります
 
 配信基盤(COOP/COEP・HTTPS・SPAフォールバック、#12〜#15)は PR #24 で入りました。開発サーバー側のCOOP/COEPヘッダは `vite.config.ts` に同じものを入れてあります。
 
@@ -227,7 +247,7 @@ Honoの代わりに最小のWSサーバを立てて、`hello` → `roster_update
 
 | 場所 | 今 | 本物 |
 |---|---|---|
-| `useHonoSocket.mock.ts` | 固定のピア2人 + 自分 | `useHonoSocket.ts`(実装済み。`VITE_MOCK_SOCKET=0` で切り替え) |
+| ~~`useHonoSocket.mock.ts`~~ | — | `useHonoSocket.ts` へ切り替え済み(2026/8/25)。モックは `VITE_MOCK_SOCKET=1` で呼び戻せる |
 | `lib/assignments.ts` | 均等割り | ①の `getLayerAssignment()` |
 | `PeerView` のエンジン起動 | 2.2秒の `setTimeout` | ①の `startWasmPeerServer()` |
 | `PeerView` の処理回数・受信量 | 乱数 | `getStats()` または ①のフック |
@@ -237,5 +257,5 @@ Honoの代わりに最小のWSサーバを立てて、`hello` → `roster_update
 
 ## 次にやること
 
-1. ②の `/ws` 完成後に、`USE_MOCK_SOCKET` の既定を本物側へ倒して実機で確認する
-2. WebRTCのシグナリング(`webrtc_signal` の送受信。②の #19 の完成後)
+1. **WebRTCのシグナリング(`webrtc_signal` の送受信)。** ②の #19(素通し中継)が入ったので着手できます。requester側とpeer側の両方に実装が要るので、担当のすり合わせが先です
+2. 上の「②へ」の2番(新しい参加者が来たときの再編成)を②と詰める

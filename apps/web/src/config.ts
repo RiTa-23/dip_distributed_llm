@@ -15,6 +15,8 @@ export const DEFAULT_DISPLAY_NAME = "参加者のPC";
  * `/ws` の接続先の上書き。既定(空文字)では画面を配信しているオリジンへ繋ぐ。
  * viteのdevサーバ(5173)とHono(8443)を別々に動かすときだけ使う。
  *   例: VITE_HONO_WS_URL=wss://localhost:8443/ws bun run dev
+ *
+ * VITE_HONO_ORIGIN を指定した場合はviteが `/ws` をプロキシするので、こちらは要らない。
  */
 export const WS_URL_OVERRIDE: string = String(import.meta.env.VITE_HONO_WS_URL ?? "");
 
@@ -30,8 +32,14 @@ export const JOIN_INFO_PATH = "/join-info";
 /**
  * 制御プレーンをモックで動かすかどうか。
  *
- * Honoの `/ws` はまだ404を返すスタブなので、既定はモックのまま。
- * 本物へ繋ぐとき: `VITE_MOCK_SOCKET=0 bun run dev`
- * ②の #16〜#19 がマージされたら、この既定値を本物側へ倒す。
+ * 既定は本物(`useHonoSocket`)。②の `/ws`(#16〜#19)がマージされ、実機で
+ * hello → roster_update → generation_start → 切断 → 再接続 まで通ったため、
+ * 2026/8/25にモックから既定を倒した。
+ *
+ * モックへ戻すとき: `VITE_MOCK_SOCKET=1 bun run dev`
+ * Honoを別プロセスで動かすとき: `VITE_HONO_ORIGIN=http://localhost:3000 bun run dev`
+ *
+ * モックはまだ消さない。Honoを起動せずに再編成の見た目を確認する用途と、
+ * DevPanelのROSTERボタン(ピアの増減を手で起こす)がモック側にしかないため。
  */
-export const USE_MOCK_SOCKET: boolean = import.meta.env.VITE_MOCK_SOCKET !== "0";
+export const USE_MOCK_SOCKET: boolean = import.meta.env.VITE_MOCK_SOCKET === "1";

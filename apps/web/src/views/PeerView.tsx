@@ -41,7 +41,7 @@ export function PeerView() {
   const [progress, setProgress] = useState(0);
   const [calls, setCalls] = useState(0);
   const [bytes, setBytes] = useState(0);
-  const [myId] = useState(getClientId);
+  const [myId] = useState(() => getClientId("peer"));
   const env = useEnvironment();
 
   const { phase } = state;
