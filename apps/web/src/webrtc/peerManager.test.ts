@@ -497,6 +497,7 @@ type Congestible = {
   drain: () => void;
 };
 
+/** 詰まった状態を作れる偽チャンネル。`stall` で水位を上げ、`drain` で下げて待っている側を起こす */
 function createCongestibleWire(deliver: (data: ArrayBuffer) => void): Congestible {
   const frames: ArrayBuffer[] = [];
   const listeners: (() => void)[] = [];
@@ -534,6 +535,7 @@ type CongestedPair = {
   toPeer: Congestible;
 };
 
+/** 発表者→参加者の向きだけを詰まらせた組。上限は発表者側にだけ効かせる */
 function createCongestedPair(options: PeerManagerOptions = {}): CongestedPair {
   const requester = createPeerManager(options);
   const peer = createPeerManager();
