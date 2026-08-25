@@ -24,8 +24,11 @@ bun run setup
 | ダミーモデル | `bun run dummy-model` | `public/models/qwen2.5-1.5b-instruct-q4_k_m.gguf` を生成(#12) |
 | フロント配置 | `bun run web:copy` | `apps/web` をビルドし `public/web-dist/` にコピー(単一オリジン配信) |
 
-- 事前に [mkcert](https://github.com/FiloSottile/mkcert) が必要(`brew install mkcert nss`)
-- 別PCから HTTPS でテストする場合は、その参照ホスト(LAN IP)を含めて `bun run cert` を再実行する
+- 事前に [mkcert](https://github.com/FiloSottile/mkcert) が必要
+  - macOS: `brew install mkcert nss`
+  - Windows: `choco install mkcert`(または `scoop install mkcert`)
+- 各スクリプト(`cert` / `dummy-model` / `web:copy`)はBunで動くTypeScriptで書かれており、macOS/Windows/Linuxで同じように動く(#30)。LAN IPの検出も[`src/lanAddress.ts`](src/lanAddress.ts)(`os.networkInterfaces()`)を共用しており、OS依存のコマンド(`route`/`ipconfig`/`cp -r`等)には頼らない
+- 別PCから HTTPS でテストする場合は、検出されなかったホスト(LAN IP)を引数で追加できる: `bun run cert 192.168.11.5`
 - 証明書・モデル・`web-dist` は `.gitignore` 済み(各自ローカルで用意)
 
 ## 起動
