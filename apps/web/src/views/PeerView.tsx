@@ -6,6 +6,8 @@ import { ProgressBar } from "../components/ProgressBar";
 import { Metric, MetricGrid } from "../components/Metric";
 import { DevPanel } from "../components/DevPanel";
 import { useCluster } from "../hooks/useCluster";
+import { useWebrtcSignaling } from "../hooks/useWebrtcSignaling";
+import type { WebrtcStatus } from "../hooks/useWebrtcSignaling";
 import { getClientId } from "../lib/clientId";
 import { describeMemory, describeWebgpu } from "../lib/environment";
 import { useEnvironment } from "../hooks/useEnvironment";
@@ -13,6 +15,17 @@ import { formatBytes, formatCount } from "../lib/format";
 import { DEFAULT_DISPLAY_NAME, TOTAL_LAYERS } from "../config";
 import type { Phase } from "../types/cluster";
 import styles from "./PeerView.module.css";
+
+/**
+ * 直接接続の進み具合。実測できるのは「相手が決まった」「開いた」の2段だけなので、
+ * 途中の値を作らずこの3つに丸める。モデルの受信量が出せるようになるのは①のRPC連携が入ってから。
+ */
+const CONNECT_PROGRESS: Record<WebrtcStatus, number> = {
+  idle: 0.08,
+  connecting: 0.5,
+  open: 1,
+  failed: 0,
+};
 
 const TITLES: Record<Phase, string> = {
   idle: "計算に参加する",
@@ -37,8 +50,9 @@ const HINTS: Record<Phase, string> = {
 export function PeerView() {
   const [joined, setJoined] = useState(false);
   const [displayName, setDisplayName] = useState(DEFAULT_DISPLAY_NAME);
-  const { state, dispatch, send, assignments, debug } = useCluster({ enabled: joined });
-  const [progress, setProgress] = useState(0);
+  const { state, dispatch, send, lastMessage, assignments, debug } = useCluster({
+    enabled: joined,
+  });
   const [calls, setCalls] = useState(0);
   const [bytes, setBytes] = useState(0);
   const [myId] = useState(() => getClientId("peer"));
@@ -46,6 +60,19 @@ export function PeerView() {
 
   const { phase } = state;
   const isActive = phase === "active";
+
+  // 発表者からのofferを受けてanswerを返す。フェーズの判断はしないので、
+  // ここが返すのは接続の状況だけ
+  const rtc = useWebrtcSignaling({
+    role: "peer",
+    myId,
+    enabled: joined,
+    lastMessage,
+    send,
+    onFailed: (message) => dispatch({ type: "failed", message }),
+  });
+  const progress = CONNECT_PROGRESS[rtc.status];
+
   // 空白だけの名前で参加させない。層バーに名前のない区間ができる。
   // secure contextでないときも止める。SharedArrayBuffer・WebGPU・WebRTCが
   // どれも使えず、参加しても計算できないため
@@ -68,17 +95,13 @@ export function PeerView() {
     return () => clearTimeout(t);
   }, [phase, send, dispatch, displayName, myId]);
 
-  // WebRTCが繋がるまでの代わり
+  // 発表者とのDataChannelが開いたら受信中を抜ける。世代の古い接続がここへ来ることは
+  // ない(useWebrtcSignaling が open になる前に閉じている)
   useEffect(() => {
-    if (phase !== "connecting") return;
-    let v = 0;
-    const id = window.setInterval(() => {
-      v = Math.min(1, v + 0.04);
-      setProgress(v);
-      if (v >= 1) dispatch({ type: "datachannel_open" });
-    }, 70);
-    return () => clearInterval(id);
-  }, [phase, dispatch]);
+    if (phase === "connecting" && rtc.status === "open") {
+      dispatch({ type: "datachannel_open" });
+    }
+  }, [phase, rtc.status, dispatch]);
 
   // 稼働中の計測。本物は RTCPeerConnection.getStats() を250msごとに読む
   useEffect(() => {
@@ -91,7 +114,6 @@ export function PeerView() {
   }, [phase]);
 
   const join = () => {
-    setProgress(0);
     setCalls(0);
     setBytes(0);
     setJoined(true);
@@ -158,7 +180,7 @@ export function PeerView() {
           </div>
         )}
 
-        {phase === "connecting" && <ProgressBar value={progress} label="モデルの受信" />}
+        {phase === "connecting" && <ProgressBar value={progress} label="発表者との直接接続" />}
 
         {phase === "reorganizing" && (
           <p className={styles.notice}>メンバーが変わったため再編成しています</p>
