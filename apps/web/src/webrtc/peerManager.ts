@@ -12,6 +12,9 @@
 // 接続そのものは張らない。Honoのシグナリングで開いたDataChannelを
 // requesterSession / peerSession から `attach()` で受け取り、その上に載せる。
 
+import { createPeerStats } from "./peerStats";
+import type { PeerStatsReader } from "./peerStats";
+
 /** llmletのRPCパッチが呼ぶ側の口。名前と引数は `libllmlet.js` に合わせてある */
 export type LlamaPeerManager = {
   /** 相手ノードへ論理接続を開く。fd(失敗なら-1)をdoneで返す */
@@ -57,6 +60,12 @@ export type PeerManagerHost = {
    * 回線が閉じたものは除く(選んでも `connect` が-1を返すだけのため)
    */
   remoteIds: () => string[];
+  /**
+   * 流れたバイト数と往復の数え上げ。画面の計測表示の出どころ
+   * (`hooks/usePeerStats.ts` が250msごとに読む)。
+   * 数える側はこのモジュールの内側に閉じていて、外からは読むだけ。
+   */
+  stats: PeerStatsReader;
 };
 
 export type WebrtcPeerManager = LlamaPeerManager & PeerManagerHost;
@@ -90,6 +99,8 @@ export type PeerManagerOptions = {
   maxRecvQueueBytes?: number;
   /** 1回線が抱えられる送信待ちバイト数の上限。既定は `MAX_SEND_QUEUE_BYTES` */
   maxSendQueueBytes?: number;
+  /** 計測に使う時計。既定は `performance.now()`。テストで固定するために外から渡せる */
+  now?: () => number;
 };
 
 // ---- DataChannel上のフレーム形式 ------------------------------------------
@@ -218,7 +229,10 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
     onError,
     maxRecvQueueBytes = MAX_RECV_QUEUE_BYTES,
     maxSendQueueBytes = MAX_SEND_QUEUE_BYTES,
+    now,
   } = options;
+
+  const stats = createPeerStats(now);
 
   const links = new Map<string, Link>();
   const conns = new Map<number, Conn>();
@@ -461,6 +475,9 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
     }
     conn.recvBuf.push(body);
     conn.queuedBytes += body.byteLength;
+    // 数えるのは本文だけ。制御フレーム(CONNECT/ACCEPTED/CLOSE)を混ぜると、
+    // 接続の手続きが1回の往復として数えられてしまう
+    stats.onReceived(link.remoteId, body.byteLength);
     const wake = conn.wake;
     conn.wake = null;
     wake?.();
@@ -526,6 +543,8 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
     remoteIds: () =>
       [...links.values()].filter((l) => l.channel.readyState === "open").map((l) => l.remoteId),
 
+    stats,
+
     connect: (nodeId, done) => {
       const link = links.get(nodeId);
       if (!link || link.channel.readyState !== "open") {
@@ -572,9 +591,12 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
         const frame = buildFrame(CMD_DATA, data.subarray(sent, sent + take));
         const result = pushFrame(conn.link, frame, conn.fd);
         // 回線が閉じた・キューが埋まった。受け取れたぶんだけ返す
-        if (result === "closed" || result === "full") return sent;
+        if (result === "closed" || result === "full") break;
         sent += take;
       }
+      // 分割の仕方ではなくC側の呼び出し1回を1回と数えたいので、
+      // 積み終えてからまとめて数える(往復の判定もこの粒度でよい)
+      if (sent > 0) stats.onSent(conn.link.remoteId, sent);
       return sent;
     },
 

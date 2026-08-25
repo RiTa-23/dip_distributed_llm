@@ -670,3 +670,107 @@ describe("remoteIds", () => {
     expect(pm.remoteIds()).toEqual([]);
   });
 });
+
+describe("計測(stats)", () => {
+  test("本文のバイト数だけを数える。フレームヘッダと制御フレームは含めない", () => {
+    const pair = createPair();
+    const { clientFd, serverFd } = handshake(pair, false);
+
+    // 数えるのはここで渡した2000バイトだけ。実際に回線を流れるのは
+    // CONNECT・ACCEPTEDの各1バイトと、フレームごとの1バイトのヘッダが余分に乗る
+    pair.requester.send(clientFd, pattern(2000));
+    recvNow(pair.peer, serverFd, 2000);
+
+    expect(pair.requester.stats.snapshot().bytesSent).toBe(2000);
+    expect(pair.requester.stats.snapshot().bytesReceived).toBe(0);
+    expect(pair.peer.stats.snapshot().bytesReceived).toBe(2000);
+  });
+
+  test("64KiBに分割された送信も、C側の呼び出し1回として数える", () => {
+    const pair = createPair();
+    const { clientFd, serverFd } = handshake(pair, false);
+    const size = 200 * 1024;
+
+    pair.requester.send(clientFd, pattern(size));
+    recvNow(pair.peer, serverFd, size);
+
+    // 4フレームに分かれるが、送信側の往復は1回ぶん
+    expect(pair.toPeer.length).toBeGreaterThan(4);
+    expect(pair.requester.stats.snapshot().bytesSent).toBe(size);
+    expect(pair.peer.stats.snapshot().bytesReceived).toBe(size);
+  });
+
+  test("受け取って返すたびに処理回数が増える", () => {
+    const pair = createPair();
+    const { clientFd, serverFd } = handshake(pair, false);
+
+    for (let i = 0; i < 3; i++) {
+      // 要求(発表者→参加者)
+      pair.requester.send(clientFd, pattern(64));
+      recvNow(pair.peer, serverFd, 64);
+      // 応答(参加者→発表者)
+      pair.peer.send(serverFd, pattern(16));
+      recvNow(pair.requester, clientFd, 16);
+    }
+
+    // 参加者から見れば「3回処理した」
+    expect(pair.peer.stats.snapshot().turns).toBe(3);
+  });
+
+  test("接続の手続きだけでは処理回数が増えない", () => {
+    const pair = createPair();
+    handshake(pair, false);
+    expect(pair.peer.stats.snapshot().turns).toBe(0);
+    expect(pair.peer.stats.snapshot().lastActivityAt).toBe(null);
+  });
+
+  test("相手ごとの内訳が出る", () => {
+    const requester = createPeerManager();
+    const peerA = createPeerManager();
+    const peerB = createPeerManager();
+
+    // 星型なので、発表者は2本の回線を持ち、参加者はそれぞれ1本ずつ持つ
+    const toPeerA = createWire((data) => peerA.handleMessage(REQUESTER_ID, data));
+    const toPeerB = createWire((data) => peerB.handleMessage(REQUESTER_ID, data));
+    requester.attach("peer-a", toPeerA.channel);
+    requester.attach("peer-b", toPeerB.channel);
+    peerA.attach(
+      REQUESTER_ID,
+      createWire((data) => requester.handleMessage("peer-a", data)).channel,
+    );
+    peerB.attach(
+      REQUESTER_ID,
+      createWire((data) => requester.handleMessage("peer-b", data)).channel,
+    );
+
+    let fdA = -1;
+    let fdB = -1;
+    peerA.accept(() => {});
+    peerB.accept(() => {});
+    requester.connect("peer-a", (fd) => {
+      fdA = fd;
+    });
+    requester.connect("peer-b", (fd) => {
+      fdB = fd;
+    });
+
+    requester.send(fdA, pattern(100));
+    requester.send(fdB, pattern(300));
+
+    expect(requester.stats.snapshotOf("peer-a").bytesSent).toBe(100);
+    expect(requester.stats.snapshotOf("peer-b").bytesSent).toBe(300);
+    expect(requester.stats.snapshot().bytesSent).toBe(400);
+  });
+
+  test("送れなかったぶんは数えない", () => {
+    const pair = createCongestedPair();
+    const { clientFd } = handshakeCongested(pair);
+
+    pair.toPeer.stall();
+    // キューの上限より大きいものを渡す。受け取れたぶんだけが戻り値になり、
+    // 数える値もそれと一致する
+    const accepted = pair.requester.send(clientFd, pattern(200 * 1024));
+
+    expect(pair.requester.stats.snapshot().bytesSent).toBe(accepted);
+  });
+});
