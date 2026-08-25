@@ -35,7 +35,7 @@ export function RequesterView() {
   const [computingIndex, setComputingIndex] = useState<number | null>(null);
   const [input, setInput] = useState("分散推論のしくみを一言で教えて");
   const timer = useRef<number | null>(null);
-  const [myId] = useState(getClientId);
+  const [myId] = useState(() => getClientId("requester"));
 
   const { phase } = state;
   const modelReady = modelProgress >= 1;

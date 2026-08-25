@@ -1,4 +1,18 @@
-const KEY = "dip.clientId";
+import type { Role } from "@dip_distributed_llm/shared-types/messages";
+
+/**
+ * clientIdの保存先は役割ごとに分ける。
+ *
+ * 1つのキーを両画面で共有すると、同じブラウザで `/` と `/requester` を開いたときに
+ * 参加者と発表者が同一のclientIdを名乗る。Honoは「同一clientIdの張り替え(リロード)」
+ * と解釈して先に繋いだ側のソケットを捨てるため、発表者がロスターを受け取れなくなり、
+ * `generation_start` も発火しない(requesterが居ない扱いになるため)。
+ * 2026/8/25、本物の `/ws` へ繋いだ実機確認で判明した。
+ */
+const KEYS: Record<Role, string> = {
+  peer: "dip.clientId.peer",
+  requester: "dip.clientId.requester",
+};
 
 /**
  * crypto.randomUUID はsecure contextでしか存在しない。
@@ -24,10 +38,11 @@ export function randomId(): string {
  * 毎回作り直すと、リロードのたびに別人としてロスターに載り、
  * 抜けたはずの参加者が残り続ける。
  */
-export function getClientId(): string {
-  const saved = localStorage.getItem(KEY);
+export function getClientId(role: Role): string {
+  const key = KEYS[role];
+  const saved = localStorage.getItem(key);
   if (saved) return saved;
   const id = randomId();
-  localStorage.setItem(KEY, id);
+  localStorage.setItem(key, id);
   return id;
 }
