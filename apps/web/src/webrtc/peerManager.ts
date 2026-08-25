@@ -1,0 +1,402 @@
+// WASM版llama.cpp(llmletのRPCパッチ)がJS側に期待する `Module.PeerManager` の実装。
+//
+// llmlet本家はこの役をPeerJSで作っている(`llmlet.js` の `newPeerManager`)。
+// PeerJSへの依存はその関数の内側だけに閉じていて、WASM側(`main.cpp` と
+// llama.cppのRPCパッチ)は下の6メソッドしか知らない。だからシグナリングを
+// Honoへ寄せるのにC++側の変更は要らず、この1ファイルを差し替えれば済む。
+//
+// 契約の正はllmletの `libllmlet.js`。WASM側はpthreadの上で `Atomics.wait` して
+// 待ち、こちらのメソッドはメインスレッドへ寄せて呼ばれる(`__proxy: 'sync'`)。
+// RTCDataChannelがメインスレッドにあるので都合がよい。
+//
+// 接続そのものは張らない。Honoのシグナリングで開いたDataChannelを
+// requesterSession / peerSession から `attach()` で受け取り、その上に載せる。
+
+/** llmletのRPCパッチが呼ぶ側の口。名前と引数は `libllmlet.js` に合わせてある */
+export type LlamaPeerManager = {
+  /** 相手ノードへ論理接続を開く。fd(失敗なら-1)をdoneで返す */
+  connect: (nodeId: string, done: (fd: number) => void) => void;
+  /**
+   * 着信を待つ。fdをdoneで返す。
+   * -1を返してはいけない: `accept_peer` は -1 を「まだ来ていない」の番兵に使うため、
+   * -1を書くと `Atomics.wait` が起きずWASM側が止まる。
+   */
+  accept: (done: (fd: number) => void) => void;
+  /** 送信。実際に送れたバイト数を返す。fdが無ければ-1 */
+  send: (fd: number, data: Uint8Array) => number;
+  /**
+   * 受信。読めるものが1バイトも無ければ、届くまでdoneCBを呼ばずに待つ。
+   * writeCBに渡したぶんの合計がWASM側の戻り値になり、doneCB(false)は-1になる。
+   */
+  recv: (
+    fd: number,
+    len: number,
+    writeCB: (chunk: Uint8Array) => void,
+    doneCB: (ok: boolean) => void,
+  ) => void;
+  /** 論理接続を閉じる。DataChannel自体は閉じない */
+  close_connection: (fd: number) => number;
+  /** WASM側が確保した受信バッファの番地。解放のために覚えておくだけ */
+  register_buf: (fd: number, ptr: number) => void;
+  /** 全部閉じる */
+  close: () => void;
+};
+
+/** こちら(React側)から使う口 */
+export type PeerManagerHost = {
+  /** DataChannelが開いた。useWebrtcSignaling の onOpen から呼ぶ */
+  attach: (remoteId: string, channel: DataChannelLike) => void;
+  /** DataChannel上のデータ。useWebrtcSignaling の onData から呼ぶ */
+  handleMessage: (remoteId: string, data: unknown) => void;
+  /** その相手との回線が無くなった。載っている論理接続も落とす */
+  detach: (remoteId: string) => void;
+  /** テスト・表示用。今生きているfd */
+  openFds: () => number[];
+};
+
+export type WebrtcPeerManager = LlamaPeerManager & PeerManagerHost;
+
+/**
+ * PeerManagerがDataChannelに求める最小限。
+ * RTCDataChannelはこの形を満たす。テストで偽物を挿せるように構造で受ける。
+ */
+export type DataChannelLike = {
+  readyState: RTCDataChannelState;
+  bufferedAmount: number;
+  send: (data: ArrayBuffer) => void;
+};
+
+export type PeerManagerOptions = {
+  /**
+   * `register_buf` で受け取った番地を解放する。実体はWASM側の `Module.release_conn`。
+   * このモジュールをEmscriptenのModuleに依存させないため外から渡す。
+   */
+  releaseBuf?: (ptr: number) => void;
+  /** 異常の通知。画面に出す用で、制御には使わない */
+  onError?: (message: string) => void;
+};
+
+// ---- DataChannel上のフレーム形式 ------------------------------------------
+//
+// llmlet本家はPeerJSのオブジェクト送信(`conn.send({cmd, data})`)に頼っているが、
+// こちらは生のRTCDataChannelなので自前で枠を決める。両端とも我々のコードなので
+// 本家と互換である必要はない。
+//
+//   [0]    コマンド1バイト
+//   [1..]  本文(dataのときだけ)
+//
+// DataChannelは既定で順序保証つきの信頼配送なので、1メッセージ=1フレームでよく、
+// 長さ接頭辞は要らない。
+
+const CMD_CONNECT = 0x01;
+const CMD_ACCEPTED = 0x02;
+const CMD_DATA = 0x03;
+const CMD_CLOSE = 0x04;
+
+const HEADER_SIZE = 1;
+
+/**
+ * 1メッセージの上限。SCTPの相互運用で安全に通るのが64KiBなので、
+ * ヘッダを足しても超えないように本文をその分だけ削る。
+ */
+const MAX_FRAME_SIZE = 64 * 1024;
+const CHUNK_SIZE = MAX_FRAME_SIZE - HEADER_SIZE;
+
+/** fdの上限。llmletと同じ */
+const FD_MAX = 1024;
+
+type Conn = {
+  fd: number;
+  link: Link;
+  /** 届いたぶんの待ち行列。recvが先頭から削っていく */
+  recvBuf: Uint8Array[];
+  /** 待たせているrecvを起こす。1つのfdにつき同時に1つだけ */
+  wake: (() => void) | null;
+  /** connectの完了待ち。ACCEPTEDが来たら呼ぶ */
+  accepted: ((ok: boolean) => void) | null;
+  moduleBuf: number | null;
+};
+
+type Link = {
+  remoteId: string;
+  channel: DataChannelLike;
+  /**
+   * この相手と今つながっている論理接続。
+   * llama.cppのC側はソケットの開閉を頻繁に繰り返すが、1本のDataChannelの上を
+   * 直列に使い回す形になるので、同時に生きるのは1本だけ。
+   */
+  conn: Conn | null;
+};
+
+/** 受信した生データをバイト列に直す。文字列は使わないので捨てる */
+function toBytes(data: unknown): Uint8Array | null {
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  return null;
+}
+
+export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerManager {
+  const { releaseBuf, onError } = options;
+
+  const links = new Map<string, Link>();
+  const conns = new Map<number, Conn>();
+  /** CONNECTを受けてfdを割り当てたが、まだacceptされていないもの */
+  const readyFds: number[] = [];
+  /** acceptが先に呼ばれて待っているぶん */
+  const acceptWaiters: ((fd: number) => void)[] = [];
+
+  let nextFd = 0;
+
+  /** 空いているfdを探す。llmletと同じく巡回して探す */
+  const newFd = (): number | null => {
+    for (let i = 0; i < FD_MAX; i++) {
+      if (nextFd >= FD_MAX) nextFd = 0;
+      const fd = nextFd++;
+      if (!conns.has(fd)) return fd;
+    }
+    onError?.("論理接続が上限に達しました");
+    return null;
+  };
+
+  const sendFrame = (link: Link, cmd: number, body?: Uint8Array): boolean => {
+    if (link.channel.readyState !== "open") return false;
+    const frame = new Uint8Array(HEADER_SIZE + (body?.byteLength ?? 0));
+    frame[0] = cmd;
+    if (body) frame.set(body, HEADER_SIZE);
+    try {
+      link.channel.send(frame.buffer);
+      return true;
+    } catch (e: unknown) {
+      onError?.(e instanceof Error ? e.message : String(e));
+      return false;
+    }
+  };
+
+  /**
+   * 論理接続を畳む。conns から先に消してから wake を呼ぶ。
+   * 順番が逆だと、待たせていたrecvが「まだ生きている」と誤認して成功を返す。
+   */
+  const destroy = (conn: Conn) => {
+    conns.delete(conn.fd);
+    if (conn.link.conn === conn) conn.link.conn = null;
+    const queued = readyFds.indexOf(conn.fd);
+    if (queued >= 0) readyFds.splice(queued, 1);
+    conn.recvBuf = [];
+    if (conn.moduleBuf !== null) {
+      releaseBuf?.(conn.moduleBuf);
+      conn.moduleBuf = null;
+    }
+    const wake = conn.wake;
+    conn.wake = null;
+    wake?.();
+    const accepted = conn.accepted;
+    conn.accepted = null;
+    accepted?.(false);
+  };
+
+  const createConn = (fd: number, link: Link): Conn => {
+    const conn: Conn = {
+      fd,
+      link,
+      recvBuf: [],
+      wake: null,
+      accepted: null,
+      moduleBuf: null,
+    };
+    link.conn = conn;
+    conns.set(fd, conn);
+    return conn;
+  };
+
+  /** acceptを1件成立させる。ACCEPTEDを返してからfdを渡す(llmletと同じ順) */
+  const settleAccept = (fd: number, done: (fd: number) => void) => {
+    const conn = conns.get(fd);
+    if (!conn) return false;
+    sendFrame(conn.link, CMD_ACCEPTED);
+    done(fd);
+    return true;
+  };
+
+  // ---- 相手から届いたフレームの処理 ----
+
+  const handleConnect = (link: Link) => {
+    // 直列使い回しの前提。前の論理接続が残っていれば畳んでから受ける
+    if (link.conn) destroy(link.conn);
+    const fd = newFd();
+    if (fd === null) return;
+    createConn(fd, link);
+
+    const waiter = acceptWaiters.shift();
+    if (waiter) {
+      settleAccept(fd, waiter);
+      return;
+    }
+    readyFds.push(fd);
+  };
+
+  const handleAccepted = (link: Link) => {
+    const conn = link.conn;
+    if (!conn) return;
+    const accepted = conn.accepted;
+    conn.accepted = null;
+    accepted?.(true);
+  };
+
+  const handleData = (link: Link, body: Uint8Array) => {
+    const conn = link.conn;
+    if (!conn || body.byteLength === 0) return;
+    conn.recvBuf.push(body);
+    const wake = conn.wake;
+    conn.wake = null;
+    wake?.();
+  };
+
+  const handleClose = (link: Link) => {
+    if (link.conn) destroy(link.conn);
+  };
+
+  // ---- 外向きの実装 ----
+
+  return {
+    attach: (remoteId, channel) => {
+      const existing = links.get(remoteId);
+      if (existing?.conn) destroy(existing.conn);
+      links.set(remoteId, { remoteId, channel, conn: null });
+    },
+
+    handleMessage: (remoteId, data) => {
+      const link = links.get(remoteId);
+      if (!link) return;
+      const frame = toBytes(data);
+      if (!frame || frame.byteLength < HEADER_SIZE) return;
+      switch (frame[0]) {
+        case CMD_CONNECT:
+          handleConnect(link);
+          return;
+        case CMD_ACCEPTED:
+          handleAccepted(link);
+          return;
+        case CMD_DATA:
+          handleData(link, frame.subarray(HEADER_SIZE));
+          return;
+        case CMD_CLOSE:
+          handleClose(link);
+          return;
+        default:
+          onError?.(`知らないフレームが届きました: ${String(frame[0])}`);
+      }
+    },
+
+    detach: (remoteId) => {
+      const link = links.get(remoteId);
+      if (!link) return;
+      if (link.conn) destroy(link.conn);
+      links.delete(remoteId);
+    },
+
+    openFds: () => [...conns.keys()],
+
+    connect: (nodeId, done) => {
+      const link = links.get(nodeId);
+      if (!link || link.channel.readyState !== "open") {
+        done(-1);
+        return;
+      }
+      // 前の論理接続が残っていれば畳む。C側は閉じてすぐ開き直すことがある
+      if (link.conn) destroy(link.conn);
+
+      const fd = newFd();
+      if (fd === null) {
+        done(-1);
+        return;
+      }
+      const conn = createConn(fd, link);
+      conn.accepted = (ok) => done(ok ? fd : -1);
+      if (!sendFrame(link, CMD_CONNECT)) destroy(conn);
+    },
+
+    accept: (done) => {
+      // 割り当て済みだが相手が既に落ちたfdは飛ばす
+      while (readyFds.length > 0) {
+        const fd = readyFds.shift();
+        if (fd === undefined) break;
+        if (settleAccept(fd, done)) return;
+      }
+      acceptWaiters.push(done);
+    },
+
+    send: (fd, data) => {
+      const conn = conns.get(fd);
+      if (!conn) return -1;
+      let sent = 0;
+      while (sent < data.byteLength) {
+        const take = Math.min(CHUNK_SIZE, data.byteLength - sent);
+        // WASMのヒープを直接見ている view なので、送る前に必ず写す
+        if (!sendFrame(conn.link, CMD_DATA, data.subarray(sent, sent + take))) {
+          return sent;
+        }
+        sent += take;
+      }
+      return sent;
+    },
+
+    recv: (fd, len, writeCB, doneCB) => {
+      const conn = conns.get(fd);
+      if (!conn) {
+        doneCB(false);
+        return;
+      }
+      const drain = (): number => {
+        let written = 0;
+        let remaining = len;
+        while (conn.recvBuf.length > 0 && remaining > 0) {
+          const head = conn.recvBuf[0];
+          if (!head) break;
+          const take = Math.min(remaining, head.byteLength);
+          writeCB(head.subarray(0, take));
+          if (take < head.byteLength) conn.recvBuf[0] = head.subarray(take);
+          else conn.recvBuf.shift();
+          written += take;
+          remaining -= take;
+        }
+        return written;
+      };
+
+      if (drain() > 0) {
+        doneCB(true);
+        return;
+      }
+      // 1バイトも無い。届くか閉じるまでdoneCBを呼ばずに待つ
+      conn.wake = () => {
+        if (conns.get(fd) !== conn) {
+          doneCB(false);
+          return;
+        }
+        drain();
+        doneCB(true);
+      };
+    },
+
+    close_connection: (fd) => {
+      const conn = conns.get(fd);
+      if (!conn) return -1;
+      sendFrame(conn.link, CMD_CLOSE);
+      destroy(conn);
+      return 0;
+    },
+
+    register_buf: (fd, ptr) => {
+      const conn = conns.get(fd);
+      if (conn) conn.moduleBuf = ptr;
+    },
+
+    close: () => {
+      for (const conn of [...conns.values()]) destroy(conn);
+      links.clear();
+      readyFds.length = 0;
+      acceptWaiters.length = 0;
+    },
+  };
+}
