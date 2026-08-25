@@ -36,10 +36,14 @@ export type WebrtcSignalingOptions = {
   /** `/ws` から届いた直近の1件。useCluster が渡す */
   lastMessage: ServerMessage | null;
   send: (msg: ClientMessage) => void;
-  /** DataChannelが開いた。①の startWasmClient / startWasmPeerServer へ渡す口 */
+  /** DataChannelが開いた。PeerManager の attach へ繋ぐ */
   onOpen?: (remoteId: string, channel: RTCDataChannel) => void;
-  /** DataChannel上でデータが届いた。①の onToken が入る場所 */
+  /** DataChannel上でデータが届いた。PeerManager の handleMessage へ繋ぐ */
   onData?: (remoteId: string, data: unknown) => void;
+  /** その相手との回線が閉じた。PeerManager の detach へ繋ぐ */
+  onClose?: (remoteId: string) => void;
+  /** 世代の切り替え・離脱で全部畳んだ。PeerManager の close へ繋ぐ */
+  onReset?: () => void;
   onFailed?: (message: string) => void;
 };
 
@@ -78,10 +82,14 @@ export function useWebrtcSignaling(options: WebrtcSignalingOptions): WebrtcSigna
   // セッションを作り直さずに済む
   const onOpenRef = useRef(options.onOpen);
   const onDataRef = useRef(options.onData);
+  const onCloseRef = useRef(options.onClose);
+  const onResetRef = useRef(options.onReset);
   const onFailedRef = useRef(options.onFailed);
   useEffect(() => {
     onOpenRef.current = options.onOpen;
     onDataRef.current = options.onData;
+    onCloseRef.current = options.onClose;
+    onResetRef.current = options.onReset;
     onFailedRef.current = options.onFailed;
   });
 
@@ -112,6 +120,9 @@ export function useWebrtcSignaling(options: WebrtcSignalingOptions): WebrtcSigna
     sessionRef.current?.teardown();
     sessionRef.current = null;
     failedRef.current = false;
+    // teardown() は受け口を外してから閉じるので onClose は飛んでこない。
+    // データプレーン側を畳むのはここだけが頼り
+    onResetRef.current?.();
   }, []);
 
   const teardown = useCallback(() => {
@@ -129,8 +140,8 @@ export function useWebrtcSignaling(options: WebrtcSignalingOptions): WebrtcSigna
 
   const startSession = useCallback(
     (generation: number, peerIds: string[]) => {
-      sessionRef.current?.teardown();
-      failedRef.current = false;
+      // 前の世代のDataChannelと、その上に載っていた論理接続をまとめて畳む
+      closeSession();
       generationRef.current = generation;
 
       const callbacks: SessionCallbacks = {
@@ -148,6 +159,12 @@ export function useWebrtcSignaling(options: WebrtcSignalingOptions): WebrtcSigna
           // 破棄判定3: 古い世代のDataChannelから届いたぶんは捨てる
           if (isStaleForCurrent(g, generationRef.current)) return;
           onDataRef.current?.(remoteId, data);
+        },
+        onClose: (g, remoteId) => {
+          // 古い世代の接続は attach されていないので、閉じても畳むものがない。
+          // 通すと同じ相手の現行の接続を巻き添えに切ってしまう
+          if (isStaleForCurrent(g, generationRef.current)) return;
+          onCloseRef.current?.(remoteId);
         },
         onFailed: (g, _remoteId, message) => {
           if (isStaleForCurrent(g, generationRef.current)) return;
@@ -168,7 +185,7 @@ export function useWebrtcSignaling(options: WebrtcSignalingOptions): WebrtcSigna
       session.start(peerIds);
       sync();
     },
-    [role, myId, send, sync],
+    [role, myId, send, sync, closeSession],
   );
 
   useEffect(() => {

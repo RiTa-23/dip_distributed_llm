@@ -29,8 +29,11 @@ function createFakeChannel(label: string): FakeChannel {
     onmessage: null,
     onerror: null,
     closed: false,
+    // 本物と同じく close() でも onclose が飛ぶ。teardown が受け口を外してから
+    // 閉じていること(外し忘れると世代交代のたびに detach が走る)を見るため
     close: () => {
       channel.closed = true;
+      channel.onclose?.();
     },
   };
   return channel;
@@ -106,6 +109,7 @@ function flush(): Promise<void> {
 type Recorder = {
   sent: WebrtcSignalMessage[];
   opened: { generation: number; remoteId: string }[];
+  closed: { generation: number; remoteId: string }[];
   data: { generation: number; remoteId: string; data: unknown }[];
   failed: { generation: number; message: string }[];
   callbacks: SessionCallbacks;
@@ -116,6 +120,7 @@ function createRecorder(): Recorder {
   const r: Recorder = {
     sent: [],
     opened: [],
+    closed: [],
     data: [],
     failed: [],
     send: (msg) => {
@@ -124,6 +129,9 @@ function createRecorder(): Recorder {
     callbacks: {
       onOpen: (generation, remoteId) => {
         r.opened.push({ generation, remoteId });
+      },
+      onClose: (generation, remoteId) => {
+        r.closed.push({ generation, remoteId });
       },
       onData: (generation, remoteId, data) => {
         r.data.push({ generation, remoteId, data });
@@ -288,6 +296,11 @@ describe("createPeerSession", () => {
 
     channel.onmessage?.({ data: "token" });
     expect(r.data).toEqual([{ generation: 3, remoteId: "c-req", data: "token" }]);
+
+    // 発表者が落ちた。載っている論理接続を畳ませるため世代つきで上げる
+    channel.onclose?.();
+    expect(r.closed).toEqual([{ generation: 3, remoteId: "c-req" }]);
+    expect(session.openIds()).toEqual([]);
   });
 
   test("teardownで閉じ、その後のイベントでは通知しない", async () => {
@@ -392,5 +405,30 @@ describe("createRequesterSession", () => {
     expect(pcs.every((pc) => pc.closed)).toBe(true);
     expect(pcs.every((pc) => pc.channels[0]?.closed === true)).toBe(true);
     expect(session.expectedIds()).toEqual([]);
+  });
+
+  test("DataChannelが閉じたらどのpeerが落ちたかをonCloseで知らせる", async () => {
+    const { pcs, r, session } = build();
+    session.start(["c-a", "c-b"]);
+    await flush();
+    pcs[0]?.channels[0]?.onopen?.();
+    pcs[1]?.channels[0]?.onopen?.();
+
+    pcs[0]?.channels[0]?.onclose?.();
+
+    expect(r.closed).toEqual([{ generation: 5, remoteId: "c-a" }]);
+    // 落ちたのは片方だけ。もう1人のRPCは続く
+    expect(session.openIds()).toEqual(["c-b"]);
+  });
+
+  test("teardownではonCloseを上げない(受け口を外してから閉じている)", async () => {
+    const { pcs, r, session } = build();
+    session.start(["c-a", "c-b"]);
+    await flush();
+    pcs[0]?.channels[0]?.onopen?.();
+    session.teardown();
+
+    // 世代交代のたびに detach が走ると、後続の close() と二重に畳むことになる
+    expect(r.closed).toEqual([]);
   });
 });

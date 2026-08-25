@@ -64,6 +64,7 @@ export function createRequesterSession({
       onClose: () => {
         if (disposed) return;
         entry.open = false;
+        callbacks.onClose(generation, peerId);
         callbacks.onChange();
       },
       // 世代の判定は呼び出し側(useWebrtcSignaling)。ここは通り道だけ用意する

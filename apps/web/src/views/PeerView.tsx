@@ -8,6 +8,7 @@ import { DevPanel } from "../components/DevPanel";
 import { useCluster } from "../hooks/useCluster";
 import { useWebrtcSignaling } from "../hooks/useWebrtcSignaling";
 import type { WebrtcStatus } from "../hooks/useWebrtcSignaling";
+import { usePeerManager } from "../hooks/usePeerManager";
 import { getClientId } from "../lib/clientId";
 import { describeMemory, describeWebgpu } from "../lib/environment";
 import { useEnvironment } from "../hooks/useEnvironment";
@@ -61,6 +62,12 @@ export function PeerView() {
   const { phase } = state;
   const isActive = phase === "active";
 
+  // 発表者とのDataChannelの上でRPCを話す側。①のWASMが起動したら
+  // `Module.PeerManager = rpc.manager` で載せる。releaseBuf はそのとき一緒に渡す
+  const rpc = usePeerManager({
+    onError: (message) => dispatch({ type: "failed", message }),
+  });
+
   // 発表者からのofferを受けてanswerを返す。フェーズの判断はしないので、
   // ここが返すのは接続の状況だけ
   const rtc = useWebrtcSignaling({
@@ -69,6 +76,7 @@ export function PeerView() {
     enabled: joined,
     lastMessage,
     send,
+    ...rpc.handlers,
     onFailed: (message) => dispatch({ type: "failed", message }),
   });
   const progress = CONNECT_PROGRESS[rtc.status];
