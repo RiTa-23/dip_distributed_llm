@@ -251,6 +251,29 @@ const rtc = useWebrtcSignaling({
 
 そのため **`close()` は `accept` の待機だけ持ち越します。** peerはRPCサーバー役なので、繋がる前から `accept` で待っていることがあります。世代交代でその待機を消すと `done` を呼ぶ者がいなくなり、WASM側は `Atomics.wait` から戻れません。次の世代のCONNECTが来ても待機者がいないので `readyFds` に積まれるだけで、pthreadは `accept` の中に閉じ込められたままになります。llama.cpp側の `accept` に世代の区別はなく「次の相手を待つ」以上の意味を持たないので、持ち越して困ることはありません。
 
+### WASMの代役スタブで確認したこと(2026/8/25、#44)
+
+WASM本体はまだ来ていませんが、**C側と同じ呼び方をする代役**([`webrtc/rpcStub.ts`](../apps/web/src/webrtc/rpcStub.ts))を書いて、橋渡しの側だけ先に確定させてあります。真似ているのは手続き(`accept` → `recv`(ヘッダ) → `recv`(本体) → `send`(応答))であって中身の意味ではありません。C側と揃えてあるのは次の2点です。
+
+- `recv` は要求したぶんが一度に来るとは限らないので、集まるまで繰り返す(llama.cppの `recv_data` と同じ)
+- `send` の戻り値が短ければ残りを送り直す(同 `send_data`。送信キューが埋まったときにここが効く)
+
+確認は2通りあります。
+
+1. **`bun test`**(`rpcStub.test.ts`): 偽のDataChannelで往復・開き直し・詰まった回線での送り直しを見ます。CIで回ります
+2. **実機**: 開発中だけ生えるコンソールの口([`webrtc/rpcConsole.ts`](../apps/web/src/webrtc/rpcConsole.ts))から、本物の `RTCDataChannel` の上で走らせます
+
+```js
+// 参加者のタブ(/)で
+__rpc.serve()
+// 発表者のタブ(/requester)で
+await __rpc.check({ sizeMiB: 8 })
+```
+
+実物のDataChannelでの実測(2026/8/25、Chrome 141、ループバック): 16MiBの往復がバイト一致で通り、`bufferedAmount` のピークは7.93MiBで頭打ちになりました(水位8MiBの直下)。同じ条件で水位を見ずに書き続けると、16MiBちょうどで `send()` が `OperationError` を投げます。
+
+**送ったものを加工して返す**作りにしてあるので、中身を読まずに返すだけの相手では通りません。分割・順序・詰まったときの送り直しが噛み合っていることの確認になります。
+
 ### まだ無いもの
 
 WASM本体(`llmlet-mod.js` / `.wasm`)が無いため、`startClient` / `startServer` に相当する起動処理がまだ書けません。ビルドが来たら、その起動処理の中で次の2つを渡せば繋がります。

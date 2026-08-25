@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createPeerManager } from "../webrtc/peerManager";
 import type { WebrtcPeerManager } from "../webrtc/peerManager";
+import { installRpcConsole } from "../webrtc/rpcConsole";
 
 /**
  * WebRTCのDataChannelとWASM版llama.cppの間に PeerManager を1つ置く。
@@ -101,6 +102,13 @@ export function usePeerManager(options: PeerManagerOptions = {}): PeerManagerBri
     },
     [bridge],
   );
+
+  // ①のWASMが来るまでのあいだ、実物のDataChannelでRPCを試すための口。
+  // 開発中だけ生える(`webrtc/rpcConsole.ts` の使い方を参照)
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    return installRpcConsole(bridge.manager);
+  }, [bridge]);
 
   return bridge;
 }

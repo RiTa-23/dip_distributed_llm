@@ -275,7 +275,8 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 
 - **TURNは持ちません。** 会場のAPアイソレーションが有効だとP2Pが成立しません(`docs/webrtc-implementation.md`)。ローカル検証では踏みません
 - **WebRTCの失敗で `peer_status: "error"` は送っていません。** 送るとサーバの「全員ready」が崩れて次の世代が始まらず、1人の失敗で全体が止まるためです。今は画面だけ `error` にしています
-- **WASM本体がありません。** `peerManager.ts` は両画面に繋ぎ込み済みで、DataChannelが開けば `attach` まで走ります。ただし `Module.PeerManager` に差し込む相手(`llmlet-mod.js` / `.wasm`)が①からまだ来ていないため、実際にRPCのバイト列が流れるところまでは繋がっていません
+- **WASM本体がありません。** `peerManager.ts` は両画面に繋ぎ込み済みで、DataChannelが開けば `attach` まで走ります。ただし `Module.PeerManager` に差し込む相手(`llmlet-mod.js` / `.wasm`)が①からまだ来ていません
+  - **RPCのバイト列そのものは、WASMの代役スタブで流して確認済みです**(2026/8/25、#44)。実物のDataChannelで16MiBの往復がバイト一致で通っています。開発中は参加者のタブで `__rpc.serve()`、発表者のタブで `await __rpc.check()` で試せます(`docs/webrtc-implementation.md` の「WASMの代役スタブで確認したこと」)
 
 ## 分担
 
@@ -326,5 +327,6 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 
 1. ~~**WebRTCのシグナリング(`webrtc_signal` の送受信)。**~~ 入りました(#37)。上の「データプレーンの繋ぎ込み(ステップ4)」を参照
 2. ~~**①へDataChannelを渡す。**~~ 担当が変わり、RPCの繋ぎ込みまでこちらで持ちます。橋渡しの本体([`webrtc/peerManager.ts`](../apps/web/src/webrtc/peerManager.ts))と、両画面への繋ぎ込み([`hooks/usePeerManager.ts`](../apps/web/src/hooks/usePeerManager.ts))が入りました
-3. **WASMが来たら `Module.PeerManager = rpc.manager` を差し込む。** ①のビルド(`llmlet-mod.js` / `.wasm`)待ちです。差し込む場所(`startClient` / `startServer` 相当の起動処理)以外は書き終わっています
+3. **WASMが来たら `Module.PeerManager = rpc.manager` を差し込む。** ①のビルド(`llmlet-mod.js` / `.wasm`)待ちです。差し込む場所(`startClient` / `startServer` 相当の起動処理)以外は書き終わっており、そこに載るバイト列のやり取りは代役スタブで確認済みです(#44)
 4. 上の「②へ」の2番(新しい参加者が来たときの再編成)を②と詰める
+5. `PeerView` の処理回数・受信量を `RTCPeerConnection.getStats()` の実測に替える(今は乱数)

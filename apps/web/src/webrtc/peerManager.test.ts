@@ -657,3 +657,16 @@ describe("送信の水位", () => {
     expect(pair.toPeer.frames.length).toBe(sentFrames);
   });
 });
+
+describe("remoteIds", () => {
+  test("回線が閉じた相手は返さない", () => {
+    const pm = createPeerManager();
+    const channel: DataChannelLike = { readyState: "open", bufferedAmount: 0, send: () => {} };
+    pm.attach(PEER_ID, channel);
+    expect(pm.remoteIds()).toEqual([PEER_ID]);
+
+    // 相手のタブが閉じた等。detachが来る前でも、宛先として選ばせない
+    channel.readyState = "closed";
+    expect(pm.remoteIds()).toEqual([]);
+  });
+});
