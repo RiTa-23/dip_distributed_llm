@@ -261,10 +261,19 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
     return frame;
   };
 
-  /** 実際にDataChannelへ書く。ここでしか `channel.send` を呼ばない */
+  /**
+   * 実際にDataChannelへ書く。ここでしか `channel.send` を呼ばない。
+   *
+   * 送信の計測もここでする。`pushFrame` が受け取った時点ではなく書けた時点で数えるのは、
+   * 水位で積んだぶんが `detach` / `close` / 書き込み失敗で捨てられることがあるため
+   * (積んだ時点で数えると、出ていない応答まで処理回数と応答時間に乗る)。
+   * 数えるのは本文だけで、制御フレーム(CONNECT/ACCEPTED/CLOSE)は混ぜない。
+   * 混ぜると接続の手続きが1回の往復として数えられてしまう。
+   */
   const writeFrame = (link: Link, frame: Uint8Array<ArrayBuffer>): boolean => {
     try {
       link.channel.send(frame.buffer);
+      if (frame[0] === CMD_DATA) stats.onSent(link.remoteId, frame.byteLength - HEADER_SIZE);
       return true;
     } catch (e: unknown) {
       onError?.(e instanceof Error ? e.message : String(e));
@@ -465,6 +474,9 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
   const handleData = (link: Link, body: Uint8Array) => {
     const conn = link.conn;
     if (!conn || body.byteLength === 0) return;
+    // 上限の判定より前に数える。ここへ来た本文は回線を渡り切っており、
+    // こちらの都合で捨てるかどうかは「受け取った量」と関係がない
+    stats.onReceived(link.remoteId, body.byteLength);
     if (conn.queuedBytes + body.byteLength > maxRecvQueueBytes) {
       onError?.(
         `${link.remoteId} からの受信が溜まりすぎました(${String(conn.queuedBytes)}バイト)。接続を切ります`,
@@ -475,9 +487,6 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
     }
     conn.recvBuf.push(body);
     conn.queuedBytes += body.byteLength;
-    // 数えるのは本文だけ。制御フレーム(CONNECT/ACCEPTED/CLOSE)を混ぜると、
-    // 接続の手続きが1回の往復として数えられてしまう
-    stats.onReceived(link.remoteId, body.byteLength);
     const wake = conn.wake;
     conn.wake = null;
     wake?.();
@@ -594,9 +603,8 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
         if (result === "closed" || result === "full") break;
         sent += take;
       }
-      // 分割の仕方ではなくC側の呼び出し1回を1回と数えたいので、
-      // 積み終えてからまとめて数える(往復の判定もこの粒度でよい)
-      if (sent > 0) stats.onSent(conn.link.remoteId, sent);
+      // 計測は writeFrame に置いてある。ここで数えると、水位で積んだまま
+      // 捨てられたぶんまで「送った」ことになる
       return sent;
     },
 

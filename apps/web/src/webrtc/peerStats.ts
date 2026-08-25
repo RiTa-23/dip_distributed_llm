@@ -11,6 +11,9 @@
 // peerManager.ts からの呼び出しは `onReceived` / `onSent` の2箇所だけで、
 // どちらも加算しかしない(オブジェクトを作らない・コールバックを呼ばない)。
 // 64KiBごとに回る送信の内側に置くため。
+//
+// 呼ばれるのは「回線を実際に渡ったとき」に揃えてある。送信は書き出せた時点、
+// 受信は届いた時点で、こちらの都合で捨てたかどうかは見ない。
 
 /** 応答時間を覚えておく本数。中央値を出すのに使う */
 const WINDOW = 32;
@@ -18,7 +21,7 @@ const WINDOW = 32;
 export type PeerStatsSnapshot = {
   /** 受け取った本文の累計バイト数。フレームヘッダと制御フレームは含まない */
   bytesReceived: number;
-  /** 送った本文の累計バイト数。送信キューに積んだ時点で数える */
+  /** 送った本文の累計バイト数。回線へ書き出せた時点で数える */
   bytesSent: number;
   /** 応答を返した回数。受信→送信の反転を数える */
   turns: number;
@@ -72,6 +75,7 @@ type Counters = {
   turnStartedAt: number | null;
 };
 
+/** 相手を初めて見たときの初期値 */
 function createCounters(): Counters {
   return {
     bytesReceived: 0,
@@ -99,6 +103,7 @@ export function median(values: number[]): number | null {
 export function createPeerStats(now: () => number = () => performance.now()): PeerStats {
   const byRemote = new Map<string, Counters>();
 
+  /** その相手の数え上げ。初めてなら作る */
   const counters = (remoteId: string): Counters => {
     const existing = byRemote.get(remoteId);
     if (existing) return existing;
@@ -107,6 +112,7 @@ export function createPeerStats(now: () => number = () => performance.now()): Pe
     return created;
   };
 
+  /** 内訳1件ぶんを外向きの形に直す。中央値はここで出す */
   const toSnapshot = (c: Counters): PeerStatsSnapshot => ({
     bytesReceived: c.bytesReceived,
     bytesSent: c.bytesSent,

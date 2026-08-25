@@ -26,6 +26,7 @@ export type PeerStatsView = PeerStatsSnapshot & {
 
 const EMPTY_VIEW: PeerStatsView = { ...EMPTY_STATS, started: false, busy: false };
 
+/** 表示に効く値が同じか。同じなら再描画しない(lastActivityAtは表示に出ないので見ない) */
 function same(a: PeerStatsView, b: PeerStatsView): boolean {
   return (
     a.bytesReceived === b.bytesReceived &&

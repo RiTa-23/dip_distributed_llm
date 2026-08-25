@@ -118,6 +118,14 @@ function pattern(size: number): Uint8Array {
   return data;
 }
 
+/** 相手から届いたことにするフレームを組む。相手側のPeerManagerを立てずに1本だけ流したいとき用 */
+function frameOf(cmd: number, body?: Uint8Array): ArrayBuffer {
+  const frame = new Uint8Array(1 + (body?.byteLength ?? 0));
+  frame[0] = cmd;
+  if (body) frame.set(body, 1);
+  return frame.buffer;
+}
+
 describe("接続の確立", () => {
   test("acceptが先でもconnectが先でも、両側にfdが渡る", () => {
     for (const acceptFirst of [true, false]) {
@@ -762,15 +770,50 @@ describe("計測(stats)", () => {
     expect(requester.stats.snapshot().bytesSent).toBe(400);
   });
 
-  test("送れなかったぶんは数えない", () => {
+  test("水位で積んだだけのぶんは、書き出せるまで数えない", () => {
+    const pair = createCongestedPair();
+    const { clientFd } = handshakeCongested(pair);
+    const before = pair.requester.stats.snapshot().bytesSent;
+
+    pair.toPeer.stall();
+    // C側は受け取ってもらえた扱いになるが、まだ回線を渡っていない
+    const accepted = pair.requester.send(clientFd, pattern(200 * 1024));
+    expect(accepted).toBeGreaterThan(0);
+    expect(pair.requester.stats.snapshot().bytesSent).toBe(before);
+
+    pair.toPeer.drain();
+    expect(pair.requester.stats.snapshot().bytesSent).toBe(before + accepted);
+  });
+
+  test("積んだまま捨てられたぶんは数えない", () => {
     const pair = createCongestedPair();
     const { clientFd } = handshakeCongested(pair);
 
     pair.toPeer.stall();
-    // キューの上限より大きいものを渡す。受け取れたぶんだけが戻り値になり、
-    // 数える値もそれと一致する
-    const accepted = pair.requester.send(clientFd, pattern(200 * 1024));
+    pair.requester.send(clientFd, pattern(200 * 1024));
+    // 相手が落ちた。積んであるものは出せないので捨てられる
+    pair.requester.detach(PEER_ID);
+    pair.toPeer.drain();
 
-    expect(pair.requester.stats.snapshot().bytesSent).toBe(accepted);
+    expect(pair.requester.stats.snapshot().bytesSent).toBe(0);
+  });
+
+  test("受信の上限を超えて捨てたぶんも、受け取った量には含める", () => {
+    const peer = createPeerManager({ maxRecvQueueBytes: 4 * 1024 });
+    const wire = createWire(() => {});
+    peer.attach(REQUESTER_ID, wire.channel);
+
+    let serverFd = -1;
+    peer.accept((fd) => {
+      serverFd = fd;
+    });
+    peer.handleMessage(REQUESTER_ID, frameOf(0x01));
+    expect(serverFd).toBeGreaterThanOrEqual(0);
+
+    // 上限を超える本文を1つ流す。論理接続は畳まれるが、回線は渡り切っている
+    peer.handleMessage(REQUESTER_ID, frameOf(0x03, pattern(8 * 1024)));
+
+    expect(peer.openFds()).toEqual([]);
+    expect(peer.stats.snapshot().bytesReceived).toBe(8 * 1024);
   });
 });
