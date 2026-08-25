@@ -9,7 +9,7 @@ import { TOTAL_LAYERS, USE_MOCK_SOCKET } from "../config";
 import type { SocketDebug } from "../types/socket";
 import type { ClusterAction } from "./clusterReducer";
 import type { ClusterState } from "../types/cluster";
-import type { ClientMessage } from "@dip_distributed_llm/shared-types/messages";
+import type { ClientMessage, ServerMessage } from "@dip_distributed_llm/shared-types/messages";
 
 /**
  * モックと本物のどちらを使うかは、モジュールの読み込み時に1回だけ決まる。
@@ -22,6 +22,8 @@ export type Cluster = {
   state: ClusterState;
   dispatch: (a: ClusterAction) => void;
   send: (msg: ClientMessage) => void;
+  /** `/ws` から届いた直近の1件。useWebrtcSignaling が webrtc_signal を拾うために使う */
+  lastMessage: ServerMessage | null;
   assignments: LayerAssignment[];
   debug: SocketDebug | null;
 };
@@ -45,5 +47,5 @@ export function useCluster(options: { enabled: boolean }): Cluster {
   // 表示用の仮の割り当て。本物は①の getLayerAssignment() から来る
   const assignments = useMemo(() => deriveAssignments(state.roster, TOTAL_LAYERS), [state.roster]);
 
-  return { state, dispatch, send, assignments, debug };
+  return { state, dispatch, send, lastMessage, assignments, debug };
 }

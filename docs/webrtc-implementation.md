@@ -25,6 +25,23 @@ requester                    Hono(/ws)                    peer
 
 offer/answer/ICE candidateのやり取りのみHono経由。DataChannel開通後は完全P2P。
 
+## 実装済みの構成(2026/8/25、#37)
+
+③④(React)側は入りました。**以降のコード例は考え方の見本**で、実際のファイルは次のとおりです。
+
+| 見本 | 実物 |
+|---|---|
+| `webrtc/requesterConnections.ts` | [`apps/web/src/webrtc/requesterSession.ts`](../apps/web/src/webrtc/requesterSession.ts) |
+| `webrtc/peerConnection.ts` | [`apps/web/src/webrtc/peerSession.ts`](../apps/web/src/webrtc/peerSession.ts) |
+| UI側での振り分け | [`apps/web/src/hooks/useWebrtcSignaling.ts`](../apps/web/src/hooks/useWebrtcSignaling.ts)(両画面共通) |
+
+見本との違いが2つあります。
+
+- **ICE candidateを溜める箱を挟んでいます。** 見本のように `setRemoteDescription` の解決を待たずに `addIceCandidate` を呼ぶと `InvalidStateError` で落ちます。offerよりcandidateが先に届くことはありませんが、`setRemoteDescription` が非同期なので順番待ちが要ります
+- **モジュール直下の可変変数(`let pc`)を持たせていません。** 世代ごとにセッションを作り直して古い接続を確実に閉じるため、`createPeerSession` / `createRequesterSession` が状態を閉じ込めています
+
+詳しくは `frontend.md` の「データプレーンの繋ぎ込み(ステップ4)」を参照してください。
+
 ## requester側
 
 ```ts

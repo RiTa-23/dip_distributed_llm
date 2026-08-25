@@ -5,6 +5,7 @@ import { ProgressBar } from "../components/ProgressBar";
 import { DevPanel } from "../components/DevPanel";
 import { JoinQr } from "../components/JoinQr";
 import { useCluster } from "../hooks/useCluster";
+import { useWebrtcSignaling } from "../hooks/useWebrtcSignaling";
 import { getClientId } from "../lib/clientId";
 import { MODEL_NAME, TOTAL_LAYERS } from "../config";
 import type { Phase } from "../types/cluster";
@@ -26,9 +27,8 @@ const DUMMY_ANSWER =
   "参加するPCが増えるほど、1台では載りきらない大きなモデルが動かせます。";
 
 export function RequesterView() {
-  const { state, dispatch, send, assignments, debug } = useCluster({ enabled: true });
+  const { state, dispatch, send, lastMessage, assignments, debug } = useCluster({ enabled: true });
   const [modelProgress, setModelProgress] = useState(0);
-  const [distribution, setDistribution] = useState(0);
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [streaming, setStreaming] = useState("");
   const [generating, setGenerating] = useState(false);
@@ -38,6 +38,19 @@ export function RequesterView() {
   const [myId] = useState(() => getClientId("requester"));
 
   const { phase } = state;
+
+  // generation_start の顔ぶれ全員へofferを出す。フェーズの判断はしない
+  const rtc = useWebrtcSignaling({
+    role: "requester",
+    myId,
+    enabled: true,
+    lastMessage,
+    send,
+    onFailed: (message) => dispatch({ type: "failed", message }),
+  });
+  const distribution =
+    rtc.expectedIds.length === 0 ? 0 : rtc.openIds.length / rtc.expectedIds.length;
+
   const modelReady = modelProgress >= 1;
   const canSubmit = phase === "active" && modelReady && !generating;
 
@@ -65,17 +78,12 @@ export function RequesterView() {
     return () => clearTimeout(t);
   }, [phase, send, dispatch, myId]);
 
-  // 各peerへモデルを配り終えるまでの代わり
+  // 全peerとのDataChannelが開いたら配布中を抜ける。1人でも開いていなければ待つ
   useEffect(() => {
-    if (phase !== "connecting") return;
-    let v = 0;
-    const id = window.setInterval(() => {
-      v = Math.min(1, v + 0.05);
-      setDistribution(v);
-      if (v >= 1) dispatch({ type: "datachannel_open" });
-    }, 70);
-    return () => clearInterval(id);
-  }, [phase, dispatch]);
+    if (phase === "connecting" && rtc.status === "open") {
+      dispatch({ type: "datachannel_open" });
+    }
+  }, [phase, rtc.status, dispatch]);
 
   useEffect(
     () => () => {
@@ -174,7 +182,10 @@ export function RequesterView() {
               showLabels={false}
             />
             {phase === "connecting" && (
-              <div className={styles.dim}>配布中 {Math.round(distribution * 100)}%</div>
+              <div className={styles.dim}>
+                接続 {rtc.openIds.length}/{rtc.expectedIds.length}人 ·{" "}
+                {Math.round(distribution * 100)}%
+              </div>
             )}
           </div>
         </aside>

@@ -6,7 +6,7 @@
 
 - **画面は2つ。URLのパスだけで役割が決まる**(入口で選ばせる画面は作らない)
 - **制御プレーンは本物のHonoに繋がっている**(2026/8/25に既定を切り替えた)。Honoを起動せずに見た目だけ試したいときはモックへ戻せる
-- **データプレーン(WebRTC)はまだ無い**。モデルの受信・生成・処理量は今もダミーで動く
+- **データプレーン(WebRTC)はDataChannelが開くところまで入った**(2026/8/25)。その上を流れるRPC通信は①待ちなので、生成・処理量は今もダミーで動く
 
 ## 動かし方
 
@@ -98,6 +98,7 @@ apps/web/src/
 │   ├── useHonoSocket.ts       本物の /ws への接続(再接続・受信の検証つき)
 │   ├── useJoinUrl.ts          QRに入れる参加URLを /join-info から受け取る
 │   │                          (応答の検証は lib/joinInfo.ts)
+│   ├── useWebrtcSignaling.ts  webrtc_signalの送受信とDataChannelの生き死に
 │   └── useHonoSocket.mock.ts  Honoの代わり。本物と同じ形を返す
 ├── lib/
 │   ├── clientId.ts            localStorageに保存するclientId(役割ごとに別キー)
@@ -105,6 +106,10 @@ apps/web/src/
 │   ├── parseServerMessage.ts  受信JSONの検証。契約に合わないフレームは捨てる
 │   ├── wsUrl.ts               接続先URLの組み立て
 │   └── format.ts              バイト数・件数の表示
+├── webrtc/                    Reactに依存しない接続の組み立て
+│   ├── session.ts             共通の型・世代の判定・candidateの順番待ち
+│   ├── peerSession.ts         参加者側。offerを受けてanswerを返す
+│   └── requesterSession.ts    発表者側。全参加者へofferを出す
 ├── components/                両画面で使う部品。1部品1フォルダ相当
 │   ├── TopBar / StatusBlock / LayerBar / ProgressBar / Metric / DevPanel
 │   ├── JoinQr                 参加者を集めるQR(発表者画面のサイドバー)
@@ -213,6 +218,52 @@ const { state, dispatch, send, assignments, debug } = useCluster({ enabled: true
 
 会場では発表者と参加者が別の端末なので本番のデモは踏みませんが、**1台で両方を開いて検証する経路は必ず踏みます**。
 
+## データプレーンの繋ぎ込み(ステップ4)
+
+`webrtc_signal`(offer / answer / ice-candidate)を `/ws` に載せて `RTCPeerConnection` を張り、DataChannel `rpc` が開くまでを実装しました。**その先(RPCのバイナリ通信)は①の担当**です。
+
+入口は [`hooks/useWebrtcSignaling.ts`](../apps/web/src/hooks/useWebrtcSignaling.ts) 1つで、両画面が同じ形で呼びます。
+
+```tsx
+const rtc = useWebrtcSignaling({ role: "peer", myId, enabled: joined, lastMessage, send });
+// rtc: { generation, expectedIds, openIds, status }
+```
+
+このフックが持つのも**接続と受け渡しだけ**で、フェーズの判断はしません(`useHonoSocket.ts` と同じ)。ビュー側は `rtc.status === "open"` を見て `datachannel_open` を出すだけです。役割ごとの違いはフックの中の分岐ではなく [`webrtc/`](../apps/web/src/webrtc) の2実装(`createPeerSession` / `createRequesterSession`)にあり、どちらも `start` / `accept` / `teardown` の同じ形を返します。
+
+発表者が offer を出す相手は `generation_start` の `peerIds` から直接読んでいます。`ClusterState` に持たせていないのは、[`clusterReducer.ts`](../apps/web/src/hooks/clusterReducer.ts) を触らずに済ませるためです。参加者は相手を事前に知る必要がなく、offer の `fromId` で分かります。
+
+### 世代(generation)で古いものを捨てる
+
+セッションは作られた世代の番号を持ち、そこから上がる通知はすべて番号つきです。現行と食い違うものを捨てる、という1つの仕組みで3か所を賄っています。
+
+| 場所 | 捨てないと何が起きるか |
+|---|---|
+| `generation_aborted` の受信時 | 遅れて届いた古い中断通知が、始まったばかりの編成を巻き込む |
+| DataChannelの開通時 | 古い世代の接続が遅れて開き、再編成中の画面が `datachannel_open` で稼働中へ戻る |
+| データの受信時 | 前の編成で計算されたぶんが、今の生成の結果に混ざる |
+
+判定そのものは [`webrtc/session.ts`](../apps/web/src/webrtc/session.ts) の `isStaleAbort` / `isStaleForCurrent` で、テストは [`webrtc/session.test.ts`](../apps/web/src/webrtc/session.test.ts) にあります。
+
+### ICE candidate は remoteDescription が入るまで溜める
+
+offer より先に candidate が届くことはありませんが、`setRemoteDescription` は非同期です。その解決を待たずに `addIceCandidate` を呼ぶと `InvalidStateError` で落ちるので、両側で順番待ちの箱(`createCandidateQueue`)を挟んでいます。`docs/webrtc-implementation.md` の見本にはこの処理がありません。
+
+### 実機で確認したこと(WebRTC、2026/8/25)
+
+同一オリジン(`:3000`)で `/requester` と `/` を並べて開き、次を通しました。**参加者が「貢献中」に変わるのは DataChannel が実際に開いたときだけ**なので、70msタイマーの偽物は完全に外れています。
+
+1. 参加者が準備完了 → `generation_start`(第10世代)→ 発表者が offer → 参加者が answer → 両画面が稼働中へ
+2. 参加者が「離脱する」→ 発表者に `generation_aborted` が届き、接続を閉じて再編成中へ
+3. 参加者が再参加 → 第11世代で張り直し、両画面が稼働中へ戻る
+
+コンソールにエラーは出ていません。ICEの詳細は `chrome://webrtc-internals` で見られます。
+
+### まだ無いもの
+
+- **TURNは持ちません。** 会場のAPアイソレーションが有効だとP2Pが成立しません(`docs/webrtc-implementation.md`)。ローカル検証では踏みません
+- **WebRTCの失敗で `peer_status: "error"` は送っていません。** 送るとサーバの「全員ready」が崩れて次の世代が始まらず、1人の失敗で全体が止まるためです。今は画面だけ `error` にしています
+
 ## 分担
 
 `components/` と `hooks/` を先に固めてあるので、あとはビュー単位で分かれれば衝突しません。
@@ -249,6 +300,8 @@ const { state, dispatch, send, assignments, debug } = useCluster({ enabled: true
 |---|---|---|
 | ~~`useHonoSocket.mock.ts`~~ | — | `useHonoSocket.ts` へ切り替え済み(2026/8/25)。モックは `VITE_MOCK_SOCKET=1` で呼び戻せる |
 | `lib/assignments.ts` | 均等割り | ①の `getLayerAssignment()` |
+| ~~`PeerView` のWebRTC接続~~ | — | 本物になりました(2026/8/25)。`useWebrtcSignaling` の `status` が `open` になったら受信中を抜けます |
+| ~~`RequesterView` の配布率~~ | — | 本物になりました(2026/8/25)。開いたDataChannelの数 ÷ 繋ぐべき人数です |
 | `PeerView` のエンジン起動 | 2.2秒の `setTimeout` | ①の `startWasmPeerServer()` |
 | `PeerView` の処理回数・受信量 | 乱数 | `getStats()` または ①のフック |
 | `RequesterView` のモデルDL | 一定速度のタイマー | `fetch` + `ReadableStream` の実測 |
@@ -257,5 +310,6 @@ const { state, dispatch, send, assignments, debug } = useCluster({ enabled: true
 
 ## 次にやること
 
-1. **WebRTCのシグナリング(`webrtc_signal` の送受信)。** ②の #19(素通し中継)が入ったので着手できます。requester側とpeer側の両方に実装が要るので、担当のすり合わせが先です
-2. 上の「②へ」の2番(新しい参加者が来たときの再編成)を②と詰める
+1. ~~**WebRTCのシグナリング(`webrtc_signal` の送受信)。**~~ 入りました(#37)。上の「データプレーンの繋ぎ込み(ステップ4)」を参照
+2. **①へDataChannelを渡す。** `useWebrtcSignaling` の `onOpen(remoteId, channel)` / `onData(remoteId, data)` が受け口です。参加者側は `startWasmPeerServer(channel)`、発表者側は開いた全チャネルを `startWasmClient(channels)` へ渡す形を想定しています
+3. 上の「②へ」の2番(新しい参加者が来たときの再編成)を②と詰める
