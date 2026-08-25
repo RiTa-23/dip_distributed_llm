@@ -7,7 +7,16 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const MODEL_NAME = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
-const sizeMb = Number(process.argv[2] ?? 50);
+const MAX_SIZE_MB = 10240; // 10GB。桁違いの引数で意図せず巨大ファイルを作らないための上限
+
+const rawArg = process.argv[2];
+const sizeMb = rawArg === undefined ? 50 : Number(rawArg);
+if (!Number.isInteger(sizeMb) || sizeMb <= 0 || sizeMb > MAX_SIZE_MB) {
+  console.error(
+    `不正なサイズ指定です: "${rawArg}"。1〜${MAX_SIZE_MB}(MB, 整数)の範囲で指定してください。`,
+  );
+  process.exit(1);
+}
 
 const modelsDir = join(import.meta.dir, "..", "public", "models");
 mkdirSync(modelsDir, { recursive: true });

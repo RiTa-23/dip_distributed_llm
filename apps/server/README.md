@@ -27,7 +27,7 @@ bun run setup
 - 事前に [mkcert](https://github.com/FiloSottile/mkcert) が必要
   - macOS: `brew install mkcert nss`
   - Windows: `choco install mkcert`(または `scoop install mkcert`)
-- 各スクリプト(`cert` / `dummy-model` / `web:copy`)はBunで動くTypeScriptで書かれており、macOS/Windows/Linuxで同じように動く(#30)。LAN IPの検出も[`src/lanAddress.ts`](src/lanAddress.ts)(`os.networkInterfaces()`)を共用しており、OS依存のコマンド(`route`/`ipconfig`/`cp -r`等)には頼らない
+- 各スクリプト(`cert` / `dummy-model` / `web:copy`)はBunで動くTypeScriptで書かれており、OS依存のコマンド(`route`/`ipconfig`/`cp -r`等)には頼らない(#30)。LAN IPの検出も[`src/lanAddress.ts`](src/lanAddress.ts)(`os.networkInterfaces()`)を共用している。**macOSでは`bun run cert`(検出したLAN IPが証明書SANに入ること)・`bun run setup`(証明書/モデル/web-distの生成)を実機確認済み。Windowsは未確認**(手元に実機がないため)。Windowsで試した際に問題があれば#30に追記してほしい
 - 別PCから HTTPS でテストする場合は、検出されなかったホスト(LAN IP)を引数で追加できる: `bun run cert 192.168.11.5`
 - 証明書・モデル・`web-dist` は `.gitignore` 済み(各自ローカルで用意)
 
