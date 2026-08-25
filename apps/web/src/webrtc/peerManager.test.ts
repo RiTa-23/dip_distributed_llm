@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { createPeerManager } from "./peerManager";
-import type { DataChannelLike, WebrtcPeerManager } from "./peerManager";
+import { createPeerManager, SEND_HIGH_WATER } from "./peerManager";
+import type { DataChannelLike, PeerManagerOptions, WebrtcPeerManager } from "./peerManager";
 
 // 2つのPeerManagerを偽のDataChannelで背中合わせに繋ぎ、
 // llmletのRPCパッチが呼ぶ順番(connect/accept → send/recv → close)をなぞる。
@@ -479,5 +479,179 @@ describe("register_buf", () => {
     requester.register_buf(clientFd, 0x1234);
     requester.close_connection(clientFd);
     expect(released).toEqual([0x1234]);
+  });
+});
+
+// ---- 送信の水位 ------------------------------------------------------------
+//
+// 上のテストが使う偽チャンネルは `bufferedAmount` が常に0で、書けば必ず出ていく。
+// ここでは詰まった状態を作れる偽チャンネルを使い、水位で止まること・
+// 下がったら順に流れることを見る。
+
+type Congestible = {
+  channel: DataChannelLike;
+  frames: ArrayBuffer[];
+  /** 送信バッファが詰まったことにする */
+  stall: () => void;
+  /** 水位が下がったことにして、待っている側を起こす */
+  drain: () => void;
+};
+
+function createCongestibleWire(deliver: (data: ArrayBuffer) => void): Congestible {
+  const frames: ArrayBuffer[] = [];
+  const listeners: (() => void)[] = [];
+  const channel: DataChannelLike = {
+    readyState: "open",
+    bufferedAmount: 0,
+    send: (data) => {
+      frames.push(data);
+      deliver(data);
+    },
+    addEventListener: (_type, listener) => {
+      listeners.push(listener);
+    },
+    removeEventListener: (_type, listener) => {
+      const i = listeners.indexOf(listener);
+      if (i >= 0) listeners.splice(i, 1);
+    },
+  };
+  return {
+    channel,
+    frames,
+    stall: () => {
+      channel.bufferedAmount = SEND_HIGH_WATER + 1;
+    },
+    drain: () => {
+      channel.bufferedAmount = 0;
+      for (const listener of [...listeners]) listener();
+    },
+  };
+}
+
+type CongestedPair = {
+  requester: WebrtcPeerManager;
+  peer: WebrtcPeerManager;
+  toPeer: Congestible;
+};
+
+function createCongestedPair(options: PeerManagerOptions = {}): CongestedPair {
+  const requester = createPeerManager(options);
+  const peer = createPeerManager();
+  const toPeer = createCongestibleWire((data) => {
+    peer.handleMessage(REQUESTER_ID, data);
+  });
+  const toRequester = createWire((data) => {
+    requester.handleMessage(PEER_ID, data);
+  });
+  requester.attach(PEER_ID, toPeer.channel);
+  peer.attach(REQUESTER_ID, toRequester.channel);
+  return { requester, peer, toPeer };
+}
+
+/** connectとacceptを噛み合わせる。createCongestedPair 用 */
+function handshakeCongested(pair: CongestedPair): { clientFd: number; serverFd: number } {
+  let clientFd = -2;
+  let serverFd = -2;
+  pair.peer.accept((fd) => {
+    serverFd = fd;
+  });
+  pair.requester.connect(PEER_ID, (fd) => {
+    clientFd = fd;
+  });
+  return { clientFd, serverFd };
+}
+
+/** 握手のぶんを除いた、送信フレームのコマンド列 */
+function commandsAfter(frames: ArrayBuffer[], from: number): number[] {
+  return frames.slice(from).map((f) => new Uint8Array(f)[0] ?? -1);
+}
+
+describe("送信の水位", () => {
+  test("水位を超えている間は書き込まず、下がったら順に流す", () => {
+    const pair = createCongestedPair();
+    const { clientFd, serverFd } = handshakeCongested(pair);
+    const sentFrames = pair.toPeer.frames.length;
+
+    pair.toPeer.stall();
+    const data = pattern(200 * 1024);
+    // 呼び出し側から見れば全量を受け取っている(こちらのキューに写してある)
+    expect(pair.requester.send(clientFd, data)).toBe(data.byteLength);
+    expect(pair.toPeer.frames.length).toBe(sentFrames);
+
+    pair.toPeer.drain();
+    expect(pair.toPeer.frames.length).toBeGreaterThan(sentFrames);
+    expect(recvNow(pair.peer, serverFd, data.byteLength).bytes).toEqual(data);
+  });
+
+  test("キューが埋まったら、受け取れたぶんだけ返す(部分送信)", () => {
+    // 2フレームぶんだけ積める大きさにする
+    const pair = createCongestedPair({ maxSendQueueBytes: 128 * 1024 });
+    const { clientFd, serverFd } = handshakeCongested(pair);
+
+    pair.toPeer.stall();
+    const data = pattern(300 * 1024);
+    const sent = pair.requester.send(clientFd, data);
+    expect(sent).toBeGreaterThan(0);
+    expect(sent).toBeLessThan(data.byteLength);
+
+    // 残りは呼び出し側が送り直す。水位が下がっていれば通る
+    pair.toPeer.drain();
+    expect(pair.requester.send(clientFd, data.subarray(sent))).toBe(data.byteLength - sent);
+    expect(recvNow(pair.peer, serverFd, data.byteLength).bytes).toEqual(data);
+  });
+
+  test("キューが埋まっていても制御フレームは通る", () => {
+    // 1フレームも積めない大きさ。CLOSEまで落とすと相手の論理接続が残る
+    const pair = createCongestedPair({ maxSendQueueBytes: 1024 });
+    const { clientFd } = handshakeCongested(pair);
+    const sentFrames = pair.toPeer.frames.length;
+
+    pair.toPeer.stall();
+    expect(pair.requester.send(clientFd, pattern(100 * 1024))).toBe(0);
+    expect(pair.requester.close_connection(clientFd)).toBe(0);
+
+    pair.toPeer.drain();
+    expect(commandsAfter(pair.toPeer.frames, sentFrames)).toEqual([0x04]);
+  });
+
+  test("close_connectionのCLOSEは、積んであるDATAの後ろに並ぶ", () => {
+    const pair = createCongestedPair();
+    const { clientFd } = handshakeCongested(pair);
+    const sentFrames = pair.toPeer.frames.length;
+
+    pair.toPeer.stall();
+    // 64KiB境界をまたぐので2フレームになる
+    pair.requester.send(clientFd, pattern(100 * 1024));
+    pair.requester.close_connection(clientFd);
+    expect(pair.toPeer.frames.length).toBe(sentFrames);
+
+    pair.toPeer.drain();
+    expect(commandsAfter(pair.toPeer.frames, sentFrames)).toEqual([0x03, 0x03, 0x04]);
+  });
+
+  test("相手が落ちたら送り残しは捨てる", () => {
+    const pair = createCongestedPair();
+    const { clientFd } = handshakeCongested(pair);
+    const sentFrames = pair.toPeer.frames.length;
+
+    pair.toPeer.stall();
+    pair.requester.send(clientFd, pattern(200 * 1024));
+    pair.requester.detach(PEER_ID);
+
+    pair.toPeer.drain();
+    expect(pair.toPeer.frames.length).toBe(sentFrames);
+  });
+
+  test("世代が変わったら送り残しは捨てる", () => {
+    const pair = createCongestedPair();
+    const { clientFd } = handshakeCongested(pair);
+    const sentFrames = pair.toPeer.frames.length;
+
+    pair.toPeer.stall();
+    pair.requester.send(clientFd, pattern(200 * 1024));
+    pair.requester.close();
+
+    pair.toPeer.drain();
+    expect(pair.toPeer.frames.length).toBe(sentFrames);
   });
 });
