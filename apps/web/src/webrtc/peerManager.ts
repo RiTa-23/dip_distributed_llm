@@ -59,11 +59,18 @@ export type WebrtcPeerManager = LlamaPeerManager & PeerManagerHost;
 /**
  * PeerManagerがDataChannelに求める最小限。
  * RTCDataChannelはこの形を満たす。テストで偽物を挿せるように構造で受ける。
+ *
+ * `bufferedAmountLowThreshold` と `addEventListener` は送信の待ち合わせに使う。
+ * どちらも任意にしてあるのは偽物を軽く書けるようにするためで、無ければ
+ * 一定間隔の見直しだけで再開する(`RESUME_POLL_MS`)。
  */
 export type DataChannelLike = {
   readyState: RTCDataChannelState;
   bufferedAmount: number;
   send: (data: ArrayBuffer) => void;
+  bufferedAmountLowThreshold?: number;
+  addEventListener?: (type: "bufferedamountlow", listener: () => void) => void;
+  removeEventListener?: (type: "bufferedamountlow", listener: () => void) => void;
 };
 
 export type PeerManagerOptions = {
@@ -76,6 +83,8 @@ export type PeerManagerOptions = {
   onError?: (message: string) => void;
   /** 1つの論理接続が溜めておける受信バイト数の上限。既定は `MAX_RECV_QUEUE_BYTES` */
   maxRecvQueueBytes?: number;
+  /** 1回線が抱えられる送信待ちバイト数の上限。既定は `MAX_SEND_QUEUE_BYTES` */
+  maxSendQueueBytes?: number;
 };
 
 // ---- DataChannel上のフレーム形式 ------------------------------------------
@@ -119,6 +128,36 @@ const FD_MAX = 1024;
  */
 export const MAX_RECV_QUEUE_BYTES = 256 * 1024 * 1024;
 
+/**
+ * 送信を止める水位。`channel.bufferedAmount` がこれ以上あるうちは書き込まない。
+ *
+ * Chromeは `bufferedAmount` が16MiBに達すると `send()` が OperationError を投げる
+ * (Chrome 141で実測。チャンネル自体は開いたまま残り、投げられたフレームだけが落ちる)。
+ * llama.cppは `send_peer` 1回で大きなテンソルを丸ごと渡してくるため、
+ * 何も見ずに書き続けると本番のモデル配布でここを踏む。
+ */
+export const SEND_HIGH_WATER = 8 * 1024 * 1024;
+
+/** 再開する水位。`bufferedAmountLowThreshold` に入れる */
+const SEND_LOW_WATER = 4 * 1024 * 1024;
+
+/**
+ * `bufferedamountlow` を持たない相手のための保険。
+ * 止まっている間だけ回り、キューが空になれば止める。
+ */
+const RESUME_POLL_MS = 50;
+
+/**
+ * 1回線(DataChannel1本)が抱えられる送信待ちのバイト数。
+ *
+ * 水位で止めたぶんはこちらのヒープに積む。上限を設けないと、WASMのヒープに
+ * ある転送物をまるごと二重に持つことになる。ここを超えたぶんは `send` の
+ * 戻り値を短くして呼び出し側へ返す(ソケットの部分送信と同じ扱い)。
+ *
+ * 受信側の上限と同じく、通常の転送では踏まない大きさにしてある。
+ */
+export const MAX_SEND_QUEUE_BYTES = 64 * 1024 * 1024;
+
 type Conn = {
   fd: number;
   link: Link;
@@ -133,6 +172,12 @@ type Conn = {
   moduleBuf: number | null;
 };
 
+/** 送信待ちの1フレーム。`fd` は畳んだときに捨てる判断に使う(制御フレームはnull) */
+type Queued = {
+  frame: Uint8Array<ArrayBuffer>;
+  fd: number | null;
+};
+
 type Link = {
   remoteId: string;
   channel: DataChannelLike;
@@ -142,6 +187,15 @@ type Link = {
    * 直列に使い回す形になるので、同時に生きるのは1本だけ。
    */
   conn: Conn | null;
+  /**
+   * 水位で書き込めなかったフレーム。**回線ごとに1本**にしてある。
+   * 論理接続ごとに分けると、CLOSEが先に届いてDATAが後から出る順番が起こりうる。
+   */
+  queue: Queued[];
+  /** queue に積まれているバイト数。上限の判定に使う */
+  queuedBytes: number;
+  /** 再開待ちの後片付け。止めていないときはnull */
+  disarm: (() => void) | null;
 };
 
 /** 受信した生データをバイト列に直す。文字列は使わないので捨てる */
@@ -154,7 +208,12 @@ function toBytes(data: unknown): Uint8Array | null {
 }
 
 export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerManager {
-  const { releaseBuf, onError, maxRecvQueueBytes = MAX_RECV_QUEUE_BYTES } = options;
+  const {
+    releaseBuf,
+    onError,
+    maxRecvQueueBytes = MAX_RECV_QUEUE_BYTES,
+    maxSendQueueBytes = MAX_SEND_QUEUE_BYTES,
+  } = options;
 
   const links = new Map<string, Link>();
   const conns = new Map<number, Conn>();
@@ -176,11 +235,15 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
     return null;
   };
 
-  const sendFrame = (link: Link, cmd: number, body?: Uint8Array): boolean => {
-    if (link.channel.readyState !== "open") return false;
+  const buildFrame = (cmd: number, body?: Uint8Array): Uint8Array<ArrayBuffer> => {
     const frame = new Uint8Array(HEADER_SIZE + (body?.byteLength ?? 0));
     frame[0] = cmd;
     if (body) frame.set(body, HEADER_SIZE);
+    return frame;
+  };
+
+  /** 実際にDataChannelへ書く。ここでしか `channel.send` を呼ばない */
+  const writeFrame = (link: Link, frame: Uint8Array<ArrayBuffer>): boolean => {
     try {
       link.channel.send(frame.buffer);
       return true;
@@ -190,12 +253,120 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
     }
   };
 
+  /** 再開待ちをやめる */
+  const stopWaiting = (link: Link) => {
+    const disarm = link.disarm;
+    link.disarm = null;
+    disarm?.();
+  };
+
+  /** 積んであるものを捨てる。回線ごと畳むときだけ呼ぶ */
+  const clearQueue = (link: Link) => {
+    link.queue = [];
+    link.queuedBytes = 0;
+    stopWaiting(link);
+  };
+
+  /**
+   * 畳んだ論理接続のDATAを捨てる。
+   *
+   * 残したまま流すと、相手が開き直した次の論理接続に前の中身が混ざる。
+   * 制御フレーム(`fd` がnull)は残す。CLOSEはこれで生き延びる。
+   */
+  const dropQueued = (link: Link, fd: number) => {
+    if (link.queue.length === 0) return;
+    const kept: Queued[] = [];
+    let bytes = 0;
+    for (const q of link.queue) {
+      if (q.fd === fd) continue;
+      kept.push(q);
+      bytes += q.frame.byteLength;
+    }
+    link.queue = kept;
+    link.queuedBytes = bytes;
+    if (kept.length === 0) stopWaiting(link);
+  };
+
+  /**
+   * 水位が下がるまで待って続きを流す。
+   *
+   * `bufferedamountlow` が本命で、一定間隔の見直しは保険。イベントを持たない
+   * 相手(テストの偽物)と、閾値を跨がないまま減ったときの取りこぼしを拾う。
+   */
+  const startWaiting = (link: Link) => {
+    if (link.disarm) return;
+    const channel = link.channel;
+    const onLow = () => {
+      flush(link);
+    };
+    channel.bufferedAmountLowThreshold = SEND_LOW_WATER;
+    channel.addEventListener?.("bufferedamountlow", onLow);
+    const timer = setInterval(onLow, RESUME_POLL_MS);
+    link.disarm = () => {
+      channel.removeEventListener?.("bufferedamountlow", onLow);
+      clearInterval(timer);
+    };
+  };
+
+  /** 積んであるものを、水位に当たるまで順に書き出す */
+  const flush = (link: Link) => {
+    const channel = link.channel;
+    if (channel.readyState !== "open") {
+      // 回線が無くなった。積んでいても出せないので捨てる
+      clearQueue(link);
+      return;
+    }
+    while (link.queue.length > 0 && channel.bufferedAmount < SEND_HIGH_WATER) {
+      const head = link.queue[0];
+      if (!head) break;
+      if (!writeFrame(link, head.frame)) {
+        clearQueue(link);
+        return;
+      }
+      link.queue.shift();
+      link.queuedBytes -= head.frame.byteLength;
+    }
+    if (link.queue.length > 0) startWaiting(link);
+    else stopWaiting(link);
+  };
+
+  type PushResult = "written" | "queued" | "full" | "closed";
+
+  /**
+   * 1フレームを送る。今書けるなら書き、水位に当たっていれば積む。
+   * 順番を守るため、積んであるものがある間は新しいぶんも必ず後ろに並べる。
+   */
+  const pushFrame = (link: Link, frame: Uint8Array<ArrayBuffer>, fd: number | null): PushResult => {
+    if (link.channel.readyState !== "open") return "closed";
+    if (link.queue.length === 0 && link.channel.bufferedAmount < SEND_HIGH_WATER) {
+      return writeFrame(link, frame) ? "written" : "closed";
+    }
+    // 制御フレーム(1バイト)は上限の外に置く。ここで落とすと、CLOSEが出せずに
+    // 相手の論理接続が残る・ACCEPTEDが返せず相手が待ち続ける、といった詰まり方をする
+    if (fd !== null && link.queuedBytes + frame.byteLength > maxSendQueueBytes) {
+      return "full";
+    }
+    link.queue.push({ frame, fd });
+    link.queuedBytes += frame.byteLength;
+    startWaiting(link);
+    return "queued";
+  };
+
+  /** 制御フレーム。畳んだ後も出す必要があるので `fd` は持たせない */
+  const sendFrame = (link: Link, cmd: number): boolean =>
+    pushFrame(link, buildFrame(cmd), null) !== "closed";
+
   /**
    * 論理接続を畳む。conns から先に消してから wake を呼ぶ。
    * 順番が逆だと、待たせていたrecvが「まだ生きている」と誤認して成功を返す。
+   *
+   * `keepQueued` は `close_connection` からの正常な閉じ方のときだけ真にする。
+   * 送りかけのDATAを出し切ってからCLOSEを届けたいのはその場合だけで、
+   * 相手が落ちた・世代が変わったときの送り残しは捨てる。
    */
-  const destroy = (conn: Conn) => {
+  const destroy = (conn: Conn, keepQueued = false) => {
     conns.delete(conn.fd);
+    if (!keepQueued) dropQueued(conn.link, conn.fd);
     if (conn.link.conn === conn) conn.link.conn = null;
     const queued = readyFds.indexOf(conn.fd);
     if (queued >= 0) readyFds.splice(queued, 1);
@@ -299,8 +470,19 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
   return {
     attach: (remoteId, channel) => {
       const existing = links.get(remoteId);
-      if (existing?.conn) destroy(existing.conn);
-      links.set(remoteId, { remoteId, channel, conn: null });
+      if (existing) {
+        if (existing.conn) destroy(existing.conn);
+        // 前の回線の送り残しと、その再開待ちのタイマーを置いていかない
+        clearQueue(existing);
+      }
+      links.set(remoteId, {
+        remoteId,
+        channel,
+        conn: null,
+        queue: [],
+        queuedBytes: 0,
+        disarm: null,
+      });
     },
 
     handleMessage: (remoteId, data) => {
@@ -330,6 +512,7 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
       const link = links.get(remoteId);
       if (!link) return;
       if (link.conn) destroy(link.conn);
+      clearQueue(link);
       links.delete(remoteId);
     },
 
@@ -364,6 +547,13 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
       acceptWaiters.push(done);
     },
 
+    /**
+     * ソケットの `send(2)` と同じ扱いで、受け取れたバイト数を返す。
+     *
+     * 水位で止まっているぶんは `link.queue` に写して受け取り、常用パスでは
+     * 全量を返す。C側が部分送信を送り直す作りかどうかに依存させないため。
+     * キューまで埋まったときだけ短い値を返し、そこから先は呼び出し側に委ねる。
+     */
     send: (fd, data) => {
       const conn = conns.get(fd);
       if (!conn) return -1;
@@ -371,9 +561,10 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
       while (sent < data.byteLength) {
         const take = Math.min(CHUNK_SIZE, data.byteLength - sent);
         // WASMのヒープを直接見ている view なので、送る前に必ず写す
-        if (!sendFrame(conn.link, CMD_DATA, data.subarray(sent, sent + take))) {
-          return sent;
-        }
+        const frame = buildFrame(CMD_DATA, data.subarray(sent, sent + take));
+        const result = pushFrame(conn.link, frame, conn.fd);
+        // 回線が閉じた・キューが埋まった。受け取れたぶんだけ返す
+        if (result === "closed" || result === "full") return sent;
         sent += take;
       }
       return sent;
@@ -420,8 +611,9 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
     close_connection: (fd) => {
       const conn = conns.get(fd);
       if (!conn) return -1;
+      // 積んであるDATAの後ろにCLOSEを並べ、送り残しを出し切ってから閉じる
       sendFrame(conn.link, CMD_CLOSE);
-      destroy(conn);
+      destroy(conn, true);
       return 0;
     },
 
@@ -446,6 +638,8 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
      */
     close: () => {
       for (const conn of [...conns.values()]) destroy(conn);
+      // 回線ごと畳むので送り残しは捨てる。タイマーを止めるのもここ
+      for (const link of links.values()) clearQueue(link);
       links.clear();
       readyFds.length = 0;
     },
