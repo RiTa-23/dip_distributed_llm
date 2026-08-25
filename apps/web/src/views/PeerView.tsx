@@ -9,17 +9,19 @@ import { useCluster } from "../hooks/useCluster";
 import { useWebrtcSignaling } from "../hooks/useWebrtcSignaling";
 import type { WebrtcStatus } from "../hooks/useWebrtcSignaling";
 import { usePeerManager } from "../hooks/usePeerManager";
+import { usePeerStats } from "../hooks/usePeerStats";
 import { getClientId } from "../lib/clientId";
 import { describeMemory, describeWebgpu } from "../lib/environment";
 import { useEnvironment } from "../hooks/useEnvironment";
-import { formatBytes, formatCount } from "../lib/format";
+import { formatBytes, formatCount, formatDuration, NO_VALUE } from "../lib/format";
 import { DEFAULT_DISPLAY_NAME, TOTAL_LAYERS } from "../config";
 import type { Phase } from "../types/cluster";
 import styles from "./PeerView.module.css";
 
 /**
  * 直接接続の進み具合。実測できるのは「相手が決まった」「開いた」の2段だけなので、
- * 途中の値を作らずこの3つに丸める。モデルの受信量が出せるようになるのは①のRPC連携が入ってから。
+ * 途中の値を作らずこの3つに丸める。受信したバイト数自体は数えているが
+ * (`webrtc/peerStats.ts`)、総量が分からないので進捗率にはできない。
  */
 const CONNECT_PROGRESS: Record<WebrtcStatus, number> = {
   idle: 0.08,
@@ -43,7 +45,7 @@ const HINTS: Record<Phase, string> = {
   preparing: "エンジンを起動しています",
   waiting: "他の参加者がそろうのを待っています",
   connecting: "発表者からモデルを受け取っています",
-  active: "1トークンごとにこの丸が脈打ちます",
+  active: "計算を受け持っているあいだ、この丸が脈打ちます",
   reorganizing: "メンバーが変わりました。まもなく再開します",
   error: "起動に失敗しました",
 };
@@ -54,8 +56,6 @@ export function PeerView() {
   const { state, dispatch, send, lastMessage, assignments, debug } = useCluster({
     enabled: joined,
   });
-  const [calls, setCalls] = useState(0);
-  const [bytes, setBytes] = useState(0);
   const [myId] = useState(() => getClientId("peer"));
   const env = useEnvironment();
 
@@ -67,6 +67,9 @@ export function PeerView() {
   const rpc = usePeerManager({
     onError: (message) => dispatch({ type: "failed", message }),
   });
+
+  // 稼働中の計測。数えているのは PeerManager 側で、ここは250msごとに読むだけ
+  const stats = usePeerStats(rpc.manager.stats, joined);
 
   // 発表者からのofferを受けてanswerを返す。フェーズの判断はしないので、
   // ここが返すのは接続の状況だけ
@@ -111,19 +114,10 @@ export function PeerView() {
     }
   }, [phase, rtc.status, dispatch]);
 
-  // 稼働中の計測。本物は RTCPeerConnection.getStats() を250msごとに読む
-  useEffect(() => {
-    if (phase !== "active") return;
-    const id = window.setInterval(() => {
-      setCalls((v) => v + 1);
-      setBytes((v) => v + 1_400_000 + Math.floor(Math.random() * 400_000));
-    }, 420);
-    return () => clearInterval(id);
-  }, [phase]);
-
   const join = () => {
-    setCalls(0);
-    setBytes(0);
+    // 前回参加したぶんを持ち越さない。世代をまたいでも0には戻さないので、
+    // 0に戻すのはここだけ
+    rpc.manager.stats.reset();
     setJoined(true);
   };
 
@@ -155,6 +149,7 @@ export function PeerView() {
           title={TITLES[phase]}
           hint={HINTS[phase]}
           active={isActive}
+          pulsing={isActive && stats.busy}
           showDot={phase !== "idle"}
         />
 
@@ -205,9 +200,15 @@ export function PeerView() {
 
         {(isActive || phase === "reorganizing") && (
           <MetricGrid>
-            <Metric label="処理回数" value={formatCount(calls)} />
-            <Metric label="受信データ" value={formatBytes(bytes)} />
-            <Metric label="平均処理" value="84 ms" />
+            <Metric label="処理回数" value={stats.started ? formatCount(stats.turns) : NO_VALUE} />
+            <Metric
+              label="受信データ"
+              value={stats.started ? formatBytes(stats.bytesReceived) : NO_VALUE}
+            />
+            <Metric
+              label="応答時間"
+              value={stats.responseMs === null ? NO_VALUE : formatDuration(stats.responseMs)}
+            />
           </MetricGrid>
         )}
       </div>

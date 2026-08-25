@@ -101,19 +101,21 @@ apps/web/src/
 │   ├── useWebrtcSignaling.ts  webrtc_signalの送受信とDataChannelの生き死に
 │   ├── usePeerManager.ts      開いたDataChannelとllama.cppのRPCを繋ぐ
 │   │                          (useWebrtcSignaling へ広げて渡す形で返す)
+│   ├── usePeerStats.ts        計測値を250msごとに読んで画面へ渡す
 │   └── useHonoSocket.mock.ts  Honoの代わり。本物と同じ形を返す
 ├── lib/
 │   ├── clientId.ts            localStorageに保存するclientId(役割ごとに別キー)
 │   ├── assignments.ts         層の割り当ての仮置き(表示専用)
 │   ├── parseServerMessage.ts  受信JSONの検証。契約に合わないフレームは捨てる
 │   ├── wsUrl.ts               接続先URLの組み立て
-│   └── format.ts              バイト数・件数の表示
+│   └── format.ts              バイト数・件数・時間の表示
 ├── webrtc/                    Reactに依存しない接続の組み立て
 │   ├── session.ts             共通の型・世代の判定・candidateの順番待ち
 │   ├── peerSession.ts         参加者側。offerを受けてanswerを返す
 │   ├── requesterSession.ts    発表者側。全参加者へofferを出す
-│   └── peerManager.ts         開いたDataChannelにllama.cppのRPCを載せる
-│                              (WASM側が呼ぶ Module.PeerManager の実装)
+│   ├── peerManager.ts         開いたDataChannelにllama.cppのRPCを載せる
+│   │                          (WASM側が呼ぶ Module.PeerManager の実装)
+│   └── peerStats.ts           流れたバイト数とRPCの往復の数え上げ(計測の実体)
 ├── components/                両画面で使う部品。1部品1フォルダ相当
 │   ├── TopBar / StatusBlock / LayerBar / ProgressBar / Metric / DevPanel
 │   ├── JoinQr                 参加者を集めるQR(発表者画面のサイドバー)
@@ -278,6 +280,31 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 - **WASM本体がありません。** `peerManager.ts` は両画面に繋ぎ込み済みで、DataChannelが開けば `attach` まで走ります。ただし `Module.PeerManager` に差し込む相手(`llmlet-mod.js` / `.wasm`)が①からまだ来ていません
   - **RPCのバイト列そのものは、WASMの代役スタブで流して確認済みです**(2026/8/25、#44)。実物のDataChannelで16MiBの往復がバイト一致で通っています。開発中は参加者のタブで `__rpc.serve()`、発表者のタブで `await __rpc.check()` で試せます(`docs/webrtc-implementation.md` の「WASMの代役スタブで確認したこと」)
 
+## 計測(処理回数・受信データ・応答時間)
+
+参加者画面の下に出ている3つの数字です(#47)。乱数だったものを実測に替えてあります。
+
+**数えている場所は `RTCPeerConnection.getStats()` ではなく PeerManager です。** データプレーンのバイトは [`webrtc/peerManager.ts`](../apps/web/src/webrtc/peerManager.ts) の `writeFrame` と `handleData` を必ず通るので、ここで数えると本文のバイト数が厳密に出ます。`getStats()` はSCTP/DTLSの分が混ざるうえ、処理回数は原理的に取れません。数え上げの実体は [`webrtc/peerStats.ts`](../apps/web/src/webrtc/peerStats.ts) に独立させてあり、PeerManager からの呼び出しは `onReceived` / `onSent` の2箇所だけです。
+
+| 表示 | 実体 |
+|---|---|
+| 処理回数 | 受信→送信の**流れの反転回数**。1つの要求に1つ応答を返すので、反転の数 = 処理したRPCコマンド数 |
+| 受信データ | `CMD_DATA` の本文バイト数の累計。フレームのヘッダと制御フレームは含めない |
+| 応答時間 | 要求の1バイト目を受けてから応答の1バイト目を出すまで。直近32回の**中央値** |
+
+反転を数えるのは、peerがRPCサーバー役だからです。DataChannel上のバイトは必ず「受信が続く → 送信が続く → また受信」の往復になるので([`webrtc/rpcStub.ts`](../apps/web/src/webrtc/rpcStub.ts) が真似ているのがこの形)、受信から送信へ切り替わった回数がそのまま応答を返した回数になります。要求や応答が複数フレームに分かれても、連続する同じ向きはまとめて1回と数えます。
+
+**「平均処理」ではなく「応答時間」というラベルにしてあります。** 測っているのは受信開始から応答開始までで、純粋な計算時間ではありません(要求が回線を渡り切るのを待つ時間が入ります)。平均ではなく中央値なのは、モデル配布中の大きな転送が1回混ざるだけで平均が跳ねるためです。
+
+そのほかの決めごと:
+
+- 累計は**参加してから離脱するまで**。再編成をまたいでも0に戻しません(「自分がどれだけ働いたか」を出したいため)。0に戻すのは `PeerView` の「参加する」だけです
+- モデルの重みも受信データに含めます。実態として受け取っているデータです
+- 読むのは250msに1回([`hooks/usePeerStats.ts`](../apps/web/src/hooks/usePeerStats.ts))。転送中は `send`/`recv` が秒間数百回呼ばれるので、そのたびに再描画すると画面の更新が主な負荷になります。値が変わっていなければ `setState` もしません
+- 脈動は `turns` 1回ごとではなく「直近400msに動きがあったか」で出します。往復ごとに光らせると点滅がつぶれます
+- **①のWASMが載るまでは3つとも動きません。**数字ではなく `—` が出ます。0と書くと「計測して0だった」に見えるためです。デモで動いて見せる必要があるときは `VITE_FAKE_METRICS=1` で乱数へ戻せます(`config.ts`)
+- 相手ごとの内訳(`snapshotOf`)も持たせてあるので、発表者画面へ広げるときは設計をやり直さずに済みます
+
 ## 分担
 
 `components/` と `hooks/` を先に固めてあるので、あとはビュー単位で分かれれば衝突しません。
@@ -303,7 +330,7 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 
 1. **WASMのビルド(`llmlet-mod.js` / `.wasm`)を出してください。** RPCの橋渡し([`webrtc/peerManager.ts`](../apps/web/src/webrtc/peerManager.ts))はこちらで書き終えていますが、差し込む相手が無いと動きません。ビルド時の必須条件は `-sEXPORTED_RUNTIME_METHODS` に `release_conn` を含めることです(詳細は `docs/webrtc-implementation.md`)
 2. `getLayerAssignment()` … 各ピアの担当層。無い場合は層番号の表示を諦めます
-3. `onComputeStart` / `onComputeEnd` … 参加者側で「自分の番」が来た/終わったの通知。あると処理回数・処理時間・脈動が実測になります。無い場合は `RTCPeerConnection.getStats()` の250ms間隔ポーリングで粗く代替します
+3. `onComputeStart` / `onComputeEnd` … 参加者側で「自分の番」が来た/終わったの通知。**無くても計測は動きます**(#47。DataChannel上の往復を PeerManager 側で数えているので、`getStats()` のポーリングは要りませんでした)。もらえると「自分の番」の境目がRPCの往復ではなく計算そのものになるので、処理回数と処理時間の意味が一段はっきりします
 
 **今の層の割り当ては均等割りの仮置きです**([`lib/assignments.ts`](../apps/web/src/lib/assignments.ts))。表示専用で、割り当ての決定には使っていません。本物の配分はllama.cppが空きメモリから比例配分します(`AGENTS.md` のアーキテクチャ前提3)。
 
@@ -318,7 +345,7 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 | ~~`PeerView` のWebRTC接続~~ | — | 本物になりました(2026/8/25)。`useWebrtcSignaling` の `status` が `open` になったら受信中を抜けます |
 | ~~`RequesterView` の配布率~~ | — | 本物になりました(2026/8/25)。開いたDataChannelの数 ÷ 繋ぐべき人数です |
 | `PeerView` のエンジン起動 | 2.2秒の `setTimeout` | ①の `startWasmPeerServer()` |
-| `PeerView` の処理回数・受信量 | 乱数 | `getStats()` または ①のフック |
+| ~~`PeerView` の処理回数・受信量~~ | — | 実測になりました(#47)。数えているのは [`webrtc/peerStats.ts`](../apps/web/src/webrtc/peerStats.ts)。①のWASMが載るまでは動かないので画面には `—` が出ます。乱数へ戻すときは `VITE_FAKE_METRICS=1` |
 | `RequesterView` のモデルDL | 一定速度のタイマー | `fetch` + `ReadableStream` の実測 |
 | `RequesterView` の生成 | 固定文を1文字ずつ | ①の `onToken()` |
 | `RequesterView` の「計算中」の移動 | 12文字ごとに次のピアへ | ①の `onPeerTurn()` |
@@ -329,4 +356,4 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 2. ~~**①へDataChannelを渡す。**~~ 担当が変わり、RPCの繋ぎ込みまでこちらで持ちます。橋渡しの本体([`webrtc/peerManager.ts`](../apps/web/src/webrtc/peerManager.ts))と、両画面への繋ぎ込み([`hooks/usePeerManager.ts`](../apps/web/src/hooks/usePeerManager.ts))が入りました
 3. **WASMが来たら `Module.PeerManager = rpc.manager` を差し込む。** ①のビルド(`llmlet-mod.js` / `.wasm`)待ちです。差し込む場所(`startClient` / `startServer` 相当の起動処理)以外は書き終わっており、そこに載るバイト列のやり取りは代役スタブで確認済みです(#44)
 4. 上の「②へ」の2番(新しい参加者が来たときの再編成)を②と詰める
-5. `PeerView` の処理回数・受信量を `RTCPeerConnection.getStats()` の実測に替える(今は乱数)
+5. ~~`PeerView` の処理回数・受信量を実測に替える。~~ 入りました(#47)。計測点は `getStats()` ではなく PeerManager です(本文のバイト数を厳密に数えられ、`getStats()` では取れない処理回数も取れるため)

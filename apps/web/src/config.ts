@@ -43,3 +43,18 @@ export const JOIN_INFO_PATH = "/join-info";
  * DevPanelのROSTERボタン(ピアの増減を手で起こす)がモック側にしかないため。
  */
 export const USE_MOCK_SOCKET: boolean = import.meta.env.VITE_MOCK_SOCKET === "1";
+
+/**
+ * 参加者画面の計測を作り物に戻すかどうか。
+ *
+ * 既定は実測(`hooks/usePeerStats.ts` が PeerManager の数え上げを読む)。ただし
+ * 実測はデータプレーンに実際にバイトが流れて初めて動くので、①のWASMが載って
+ * いない状態では3つとも0のまま(画面には `—`)になる。
+ *
+ * デモで「それらしく動いて見える」状態が要るときだけ、これで乱数へ戻す:
+ *   VITE_FAKE_METRICS=1 bun run dev
+ *
+ * `USE_MOCK_SOCKET` と同じ形にしてある。返り値の形は実測と同じなので、
+ * `PeerView` 側は1行も変わらない。
+ */
+export const FAKE_METRICS: boolean = import.meta.env.VITE_FAKE_METRICS === "1";
