@@ -210,22 +210,42 @@ llama.cppのC側はソケットの開閉を頻繁に繰り返しますが、1本
 
 ### React側への繋ぎ込み
 
-`PeerManager` は接続を張りません。既に開いたDataChannelを受け取って、その上に載るだけです。`useWebrtcSignaling` の2つのコールバックにそのまま繋がります。
+`PeerManager` は接続を張りません。既に開いたDataChannelを受け取って、その上に載るだけです。繋ぎ込みは [`hooks/usePeerManager.ts`](../apps/web/src/hooks/usePeerManager.ts) にまとめてあり、両画面から同じ2行で使います。
 
 ```ts
-const pm = createPeerManager({ releaseBuf: (ptr) => Module.release_conn(ptr) })
+const rpc = usePeerManager({ onError: (message) => dispatch({ type: "failed", message }) })
 
-useWebrtcSignaling({
+const rtc = useWebrtcSignaling({
   // ...
-  onOpen: (remoteId, channel) => pm.attach(remoteId, channel),
-  onData: (remoteId, data) => pm.handleMessage(remoteId, data),
+  ...rpc.handlers,
 })
 ```
 
-世代が変わったときの破棄判定は `useWebrtcSignaling` 側で済んでいるので、古い世代のデータが `handleMessage` まで来ることはありません。
+`rpc.handlers` の中身と、それぞれが繋がる先:
+
+| コールバック | 呼ばれるとき | PeerManager側 |
+| --- | --- | --- |
+| `onOpen(remoteId, channel)` | DataChannelが開いた | `attach` |
+| `onData(remoteId, data)` | フレームが届いた | `handleMessage` |
+| `onClose(remoteId)` | その相手のDataChannelが閉じた | `detach` |
+| `onReset()` | 世代が変わった・離脱した | `close` |
+
+`onClose` と `onReset` は、この繋ぎ込みのために `useWebrtcSignaling` へ足したものです。**どちらも省くとWASM側が止まります。** 相手が落ちたのに論理接続を畳まないと、`recv` で待っているpthreadを起こす者がいなくなり、`Atomics.wait` から戻れません。2つに分かれているのは、`teardown()` がDataChannelの受け口を外してから閉じるため、世代交代では `onclose` が飛んでこないからです。
+
+世代が変わったときの破棄判定は `useWebrtcSignaling` 側で済んでいるので、古い世代のデータが `handleMessage` まで来ることはありません。`onClose` にも同じ判定を入れてあり、古い世代の接続が遅れて閉じても、同じ相手との現行の接続を巻き添えにしません。
+
+`PeerManager` の実体はマウント中ずっと同じものです。一度 `Module.PeerManager` に載せた後で差し替える手段がないため、世代が変わっても作り直さず `close()` で畳んで使い回します。
 
 ### まだ無いもの
 
-WASM本体(`llmlet-mod.js` / `.wasm`)が無いため、`Module.PeerManager = pm` を実際に差し込む箇所と、`startClient` / `startServer` に相当する起動処理はまだ書けません。ビルドが来た時点で繋ぎます。
+WASM本体(`llmlet-mod.js` / `.wasm`)が無いため、`startClient` / `startServer` に相当する起動処理がまだ書けません。ビルドが来たら、その起動処理の中で次の2つを渡せば繋がります。
+
+```ts
+// 1. register_buf で預かった番地の解放先を渡す(usePeerManager の引数に足す)
+const rpc = usePeerManager({ releaseBuf: (ptr) => Module.release_conn(ptr), onError })
+
+// 2. 起動処理の中でWASMへ載せる
+Module.PeerManager = rpc.manager
+```
 
 ビルド側の前提(llmletのMakefileより): emsdk 4.0.16以上、`-sMEMORY64=2`(wasm64)、emdawnwebgpu(Dawn)、`-sEXPORTED_RUNTIME_METHODS` に `release_conn` を含めること。パッチ済みllama.cppは `ktock/llama.cpp` のフォークです。

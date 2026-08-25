@@ -99,6 +99,8 @@ apps/web/src/
 │   ├── useJoinUrl.ts          QRに入れる参加URLを /join-info から受け取る
 │   │                          (応答の検証は lib/joinInfo.ts)
 │   ├── useWebrtcSignaling.ts  webrtc_signalの送受信とDataChannelの生き死に
+│   ├── usePeerManager.ts      開いたDataChannelとllama.cppのRPCを繋ぐ
+│   │                          (useWebrtcSignaling へ広げて渡す形で返す)
 │   └── useHonoSocket.mock.ts  Honoの代わり。本物と同じ形を返す
 ├── lib/
 │   ├── clientId.ts            localStorageに保存するclientId(役割ごとに別キー)
@@ -226,11 +228,16 @@ const { state, dispatch, send, assignments, debug } = useCluster({ enabled: true
 
 **その先(RPCのバイナリ通信)も同じ担当が持つことになりました(2026/8/25)。** [`webrtc/peerManager.ts`](../apps/web/src/webrtc/peerManager.ts) が、開いたDataChannelの上にllama.cppのRPCを載せます。①に残るのはWASMのビルドだけです。契約と枠の形は `docs/webrtc-implementation.md` の「データプレーン」節が正です。
 
-入口は [`hooks/useWebrtcSignaling.ts`](../apps/web/src/hooks/useWebrtcSignaling.ts) 1つで、両画面が同じ形で呼びます。
+入口は [`hooks/useWebrtcSignaling.ts`](../apps/web/src/hooks/useWebrtcSignaling.ts) と [`hooks/usePeerManager.ts`](../apps/web/src/hooks/usePeerManager.ts) の2つで、両画面が同じ形で呼びます。
 
 ```tsx
-const rtc = useWebrtcSignaling({ role: "peer", myId, enabled: joined, lastMessage, send });
+const rpc = usePeerManager({ onError: (message) => dispatch({ type: "failed", message }) });
+const rtc = useWebrtcSignaling({
+  role: "peer", myId, enabled: joined, lastMessage, send,
+  ...rpc.handlers, // onOpen / onData / onClose / onReset
+});
 // rtc: { generation, expectedIds, openIds, status }
+// rpc.manager: WASMが来たら Module.PeerManager に載せる本体
 ```
 
 このフックが持つのも**接続と受け渡しだけ**で、フェーズの判断はしません(`useHonoSocket.ts` と同じ)。ビュー側は `rtc.status === "open"` を見て `datachannel_open` を出すだけです。役割ごとの違いはフックの中の分岐ではなく [`webrtc/`](../apps/web/src/webrtc) の2実装(`createPeerSession` / `createRequesterSession`)にあり、どちらも `start` / `accept` / `teardown` の同じ形を返します。
@@ -246,6 +253,7 @@ const rtc = useWebrtcSignaling({ role: "peer", myId, enabled: joined, lastMessag
 | `generation_aborted` の受信時 | 遅れて届いた古い中断通知が、始まったばかりの編成を巻き込む |
 | DataChannelの開通時 | 古い世代の接続が遅れて開き、再編成中の画面が `datachannel_open` で稼働中へ戻る |
 | データの受信時 | 前の編成で計算されたぶんが、今の生成の結果に混ざる |
+| DataChannelが閉じたとき | 遅れて閉じた古い接続が、同じ相手との現行のRPCを巻き添えに切る |
 
 判定そのものは [`webrtc/session.ts`](../apps/web/src/webrtc/session.ts) の `isStaleAbort` / `isStaleForCurrent` で、テストは [`webrtc/session.test.ts`](../apps/web/src/webrtc/session.test.ts) にあります。
 
@@ -267,7 +275,7 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 
 - **TURNは持ちません。** 会場のAPアイソレーションが有効だとP2Pが成立しません(`docs/webrtc-implementation.md`)。ローカル検証では踏みません
 - **WebRTCの失敗で `peer_status: "error"` は送っていません。** 送るとサーバの「全員ready」が崩れて次の世代が始まらず、1人の失敗で全体が止まるためです。今は画面だけ `error` にしています
-- **WASM本体がありません。** `peerManager.ts` は単体で動きテストも通っていますが、`Module.PeerManager` に差し込む相手(`llmlet-mod.js` / `.wasm`)が①からまだ来ていないため、実際にRPCが流れるところまでは繋がっていません
+- **WASM本体がありません。** `peerManager.ts` は両画面に繋ぎ込み済みで、DataChannelが開けば `attach` まで走ります。ただし `Module.PeerManager` に差し込む相手(`llmlet-mod.js` / `.wasm`)が①からまだ来ていないため、実際にRPCのバイト列が流れるところまでは繋がっていません
 
 ## 分担
 
@@ -317,6 +325,6 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 ## 次にやること
 
 1. ~~**WebRTCのシグナリング(`webrtc_signal` の送受信)。**~~ 入りました(#37)。上の「データプレーンの繋ぎ込み(ステップ4)」を参照
-2. ~~**①へDataChannelを渡す。**~~ 担当が変わり、RPCの繋ぎ込みまでこちらで持ちます。橋渡しの本体([`webrtc/peerManager.ts`](../apps/web/src/webrtc/peerManager.ts))は入りました。`useWebrtcSignaling` の `onOpen(remoteId, channel)` を `pm.attach`、`onData(remoteId, data)` を `pm.handleMessage` に繋ぎます
-3. **WASMが来たら `Module.PeerManager = pm` を差し込む。** ①のビルド(`llmlet-mod.js` / `.wasm`)待ちです。それまで繋ぎ込みの最後の一手は書けません
+2. ~~**①へDataChannelを渡す。**~~ 担当が変わり、RPCの繋ぎ込みまでこちらで持ちます。橋渡しの本体([`webrtc/peerManager.ts`](../apps/web/src/webrtc/peerManager.ts))と、両画面への繋ぎ込み([`hooks/usePeerManager.ts`](../apps/web/src/hooks/usePeerManager.ts))が入りました
+3. **WASMが来たら `Module.PeerManager = rpc.manager` を差し込む。** ①のビルド(`llmlet-mod.js` / `.wasm`)待ちです。差し込む場所(`startClient` / `startServer` 相当の起動処理)以外は書き終わっています
 4. 上の「②へ」の2番(新しい参加者が来たときの再編成)を②と詰める
