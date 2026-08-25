@@ -52,6 +52,8 @@ export type PeerManagerHost = {
   detach: (remoteId: string) => void;
   /** テスト・表示用。今生きているfd */
   openFds: () => number[];
+  /** 今つながっている相手。開発用のコンソールが宛先を選ぶのに使う */
+  remoteIds: () => string[];
 };
 
 export type WebrtcPeerManager = LlamaPeerManager & PeerManagerHost;
@@ -517,6 +519,8 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
     },
 
     openFds: () => [...conns.keys()],
+
+    remoteIds: () => [...links.keys()],
 
     connect: (nodeId, done) => {
       const link = links.get(nodeId);
