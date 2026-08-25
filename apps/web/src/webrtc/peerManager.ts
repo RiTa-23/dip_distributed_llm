@@ -74,6 +74,8 @@ export type PeerManagerOptions = {
   releaseBuf?: (ptr: number) => void;
   /** 異常の通知。画面に出す用で、制御には使わない */
   onError?: (message: string) => void;
+  /** 1つの論理接続が溜めておける受信バイト数の上限。既定は `MAX_RECV_QUEUE_BYTES` */
+  maxRecvQueueBytes?: number;
 };
 
 // ---- DataChannel上のフレーム形式 ------------------------------------------
@@ -105,11 +107,25 @@ const CHUNK_SIZE = MAX_FRAME_SIZE - HEADER_SIZE;
 /** fdの上限。llmletと同じ */
 const FD_MAX = 1024;
 
+/**
+ * 1つの論理接続が溜めておける受信バイト数の上限。
+ *
+ * 相手がrecvより速く送り続けると `recvBuf` が際限なく伸び、タブがヒープを
+ * 食い潰して落ちる。落ちると何が起きたか分からないので、その手前で畳んで
+ * `onFailed` 相当を上げ、世代の組み直しに載せる。
+ *
+ * `send_peer` 1回で大きなテンソルが丸ごと来ることがあるため、上限は
+ * 通常の転送では踏まない大きさにしてある。ここを踏むのは相手かWASMの異常。
+ */
+export const MAX_RECV_QUEUE_BYTES = 256 * 1024 * 1024;
+
 type Conn = {
   fd: number;
   link: Link;
   /** 届いたぶんの待ち行列。recvが先頭から削っていく */
   recvBuf: Uint8Array[];
+  /** recvBuf に溜まっているバイト数。上限の判定に使う */
+  queuedBytes: number;
   /** 待たせているrecvを起こす。1つのfdにつき同時に1つだけ */
   wake: (() => void) | null;
   /** connectの完了待ち。ACCEPTEDが来たら呼ぶ */
@@ -138,7 +154,7 @@ function toBytes(data: unknown): Uint8Array | null {
 }
 
 export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerManager {
-  const { releaseBuf, onError } = options;
+  const { releaseBuf, onError, maxRecvQueueBytes = MAX_RECV_QUEUE_BYTES } = options;
 
   const links = new Map<string, Link>();
   const conns = new Map<number, Conn>();
@@ -184,6 +200,7 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
     const queued = readyFds.indexOf(conn.fd);
     if (queued >= 0) readyFds.splice(queued, 1);
     conn.recvBuf = [];
+    conn.queuedBytes = 0;
     if (conn.moduleBuf !== null) {
       releaseBuf?.(conn.moduleBuf);
       conn.moduleBuf = null;
@@ -201,6 +218,7 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
       fd,
       link,
       recvBuf: [],
+      queuedBytes: 0,
       wake: null,
       accepted: null,
       moduleBuf: null,
@@ -210,11 +228,20 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
     return conn;
   };
 
-  /** acceptを1件成立させる。ACCEPTEDを返してからfdを渡す(llmletと同じ順) */
+  /**
+   * acceptを1件成立させる。ACCEPTEDを返してからfdを渡す(llmletと同じ順)。
+   *
+   * ACCEPTEDを返せなかったらfdを渡さない。渡してしまうと、WASM側は使えないfdで
+   * recvに入り、起こす者がいないまま止まる(相手も accepted を待ち続ける)。
+   * 呼び出し側は false を見て、次の着信を待ち直す。
+   */
   const settleAccept = (fd: number, done: (fd: number) => void) => {
     const conn = conns.get(fd);
     if (!conn) return false;
-    sendFrame(conn.link, CMD_ACCEPTED);
+    if (!sendFrame(conn.link, CMD_ACCEPTED)) {
+      destroy(conn);
+      return false;
+    }
     done(fd);
     return true;
   };
@@ -230,7 +257,8 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
 
     const waiter = acceptWaiters.shift();
     if (waiter) {
-      settleAccept(fd, waiter);
+      // 成立しなければ待たせたまま戻す。取り出したきり捨てるとacceptが二度と返らない
+      if (!settleAccept(fd, waiter)) acceptWaiters.unshift(waiter);
       return;
     }
     readyFds.push(fd);
@@ -247,7 +275,16 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
   const handleData = (link: Link, body: Uint8Array) => {
     const conn = link.conn;
     if (!conn || body.byteLength === 0) return;
+    if (conn.queuedBytes + body.byteLength > maxRecvQueueBytes) {
+      onError?.(
+        `${link.remoteId} からの受信が溜まりすぎました(${String(conn.queuedBytes)}バイト)。接続を切ります`,
+      );
+      // 待たせているrecvはdestroyの中で失敗として返る
+      destroy(conn);
+      return;
+    }
     conn.recvBuf.push(body);
+    conn.queuedBytes += body.byteLength;
     const wake = conn.wake;
     conn.wake = null;
     wake?.();
@@ -358,6 +395,7 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
           writeCB(head.subarray(0, take));
           if (take < head.byteLength) conn.recvBuf[0] = head.subarray(take);
           else conn.recvBuf.shift();
+          conn.queuedBytes -= take;
           written += take;
           remaining -= take;
         }

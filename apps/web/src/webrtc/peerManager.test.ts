@@ -301,6 +301,136 @@ describe("切断", () => {
   });
 });
 
+describe("送信が失敗したとき", () => {
+  test("ACCEPTEDを返せなければfdを渡さず、acceptは待ち続ける", () => {
+    const errors: string[] = [];
+    const requester = createPeerManager();
+    const peer = createPeerManager({ onError: (m) => errors.push(m) });
+
+    // peer側のDataChannelだけ、途中まで例外を投げるようにする
+    let broken = true;
+    const toRequester: DataChannelLike = {
+      readyState: "open",
+      bufferedAmount: 0,
+      send: (data) => {
+        if (broken) throw new Error("送信できません");
+        requester.handleMessage(PEER_ID, data);
+      },
+    };
+    const toPeer = createWire((data) => peer.handleMessage(REQUESTER_ID, data));
+    requester.attach(PEER_ID, toPeer.channel);
+    peer.attach(REQUESTER_ID, toRequester);
+
+    let serverFd = -2;
+    peer.accept((fd) => {
+      serverFd = fd;
+    });
+    requester.connect(PEER_ID, () => {});
+
+    // fdは渡らず、論理接続も残らない
+    expect(serverFd).toBe(-2);
+    expect(peer.openFds()).toEqual([]);
+    expect(errors.length).toBeGreaterThan(0);
+
+    // 待機は保たれているので、次の着信で成立する
+    broken = false;
+    requester.connect(PEER_ID, () => {});
+    expect(serverFd).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("受信キューの上限", () => {
+  test("溜まりすぎたら接続を畳み、待たせているrecvは失敗で返る", () => {
+    const errors: string[] = [];
+    const requester = createPeerManager();
+    const peer = createPeerManager({ maxRecvQueueBytes: 100, onError: (m) => errors.push(m) });
+    const toPeer = createWire((data) => peer.handleMessage(REQUESTER_ID, data));
+    const toRequester = createWire((data) => requester.handleMessage(PEER_ID, data));
+    requester.attach(PEER_ID, toPeer.channel);
+    peer.attach(REQUESTER_ID, toRequester.channel);
+
+    let clientFd = -2;
+    let serverFd = -2;
+    peer.accept((fd) => {
+      serverFd = fd;
+    });
+    requester.connect(PEER_ID, (fd) => {
+      clientFd = fd;
+    });
+
+    // 何も届いていないので、recvは待ちに入る
+    let done = false;
+    let ok = true;
+    peer.recv(
+      serverFd,
+      10,
+      () => {},
+      (result) => {
+        done = true;
+        ok = result;
+      },
+    );
+    expect(done).toBe(false);
+
+    // 上限を超えるぶんが届いた時点で畳まれる
+    requester.send(clientFd, pattern(200));
+    expect(errors.length).toBeGreaterThan(0);
+    expect(peer.openFds()).not.toContain(serverFd);
+    expect(done).toBe(true);
+    expect(ok).toBe(false);
+  });
+
+  test("読まれないまま積み上がったぶんも合算される", () => {
+    const requester = createPeerManager();
+    const peer = createPeerManager({ maxRecvQueueBytes: 100 });
+    const toPeer = createWire((data) => peer.handleMessage(REQUESTER_ID, data));
+    const toRequester = createWire((data) => requester.handleMessage(PEER_ID, data));
+    requester.attach(PEER_ID, toPeer.channel);
+    peer.attach(REQUESTER_ID, toRequester.channel);
+
+    let clientFd = -2;
+    let serverFd = -2;
+    peer.accept((fd) => {
+      serverFd = fd;
+    });
+    requester.connect(PEER_ID, (fd) => {
+      clientFd = fd;
+    });
+
+    // 1回では踏まないが、読まないまま2回目で超える
+    requester.send(clientFd, pattern(60));
+    expect(peer.openFds()).toContain(serverFd);
+    requester.send(clientFd, pattern(60));
+    expect(peer.openFds()).not.toContain(serverFd);
+  });
+
+  test("読み出したぶんは上限の計算から外れる", () => {
+    const requester = createPeerManager();
+    const peer = createPeerManager({ maxRecvQueueBytes: 100 });
+    const toPeer = createWire((data) => peer.handleMessage(REQUESTER_ID, data));
+    const toRequester = createWire((data) => requester.handleMessage(PEER_ID, data));
+    requester.attach(PEER_ID, toPeer.channel);
+    peer.attach(REQUESTER_ID, toRequester.channel);
+
+    let clientFd = -2;
+    let serverFd = -2;
+    peer.accept((fd) => {
+      serverFd = fd;
+    });
+    requester.connect(PEER_ID, (fd) => {
+      clientFd = fd;
+    });
+
+    // 60溜めて全部読む → 残りは0
+    requester.send(clientFd, pattern(60));
+    expect(recvNow(peer, serverFd, 60).bytes.byteLength).toBe(60);
+
+    // 空になっているので、また60送っても踏まない
+    requester.send(clientFd, pattern(60));
+    expect(peer.openFds()).toContain(serverFd);
+  });
+});
+
 describe("register_buf", () => {
   test("登録した番地は接続を畳むときに解放される", () => {
     const released: number[] = [];
