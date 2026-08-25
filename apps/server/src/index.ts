@@ -1,10 +1,14 @@
 import { Hono } from "hono";
-import { serveStatic } from "hono/bun";
+import { createBunWebSocket, serveStatic } from "hono/bun";
 import { existsSync } from "node:fs";
 import { networkInterfaces } from "node:os";
+import { Coordinator, type Socket } from "./coordinator";
+import { parseClientMessage } from "./parse";
 import { buildJoinUrls } from "./lanAddress";
 
 const app = new Hono();
+const { upgradeWebSocket, websocket } = createBunWebSocket();
+const coordinator = new Coordinator();
 
 // --- TLS(#14 開発用: mkcert) ---
 // 証明書があれば HTTPS、無ければ HTTP で起動(CI・クイック確認用)。
@@ -24,11 +28,62 @@ app.use("*", async (c, next) => {
   c.header("Cross-Origin-Embedder-Policy", "require-corp");
 });
 
-// --- 制御プレーン(P1で実装) ---
-// /ws は制御プレーン用に予約。静的配信・SPAフォールバックより前に登録し、
-// index.html に飲まれないようにする。WebSocket未実装のうちは 404 を返す。
-// P1で upgradeWebSocket(...) を実装する際は、この 404 スタブを置き換える。
-app.get("/ws", (c) => c.notFound());
+// --- 制御プレーン(#16-19) ---
+// /ws は静的配信・SPAフォールバックより前に登録する(index.html に飲まれないため)。
+// Hono が扱うのは JSON(ロスター・シグナリング)のみ。実データは WebRTC P2P(AGENTS.md 前提2)。
+app.get(
+  "/ws",
+  upgradeWebSocket(() => {
+    let clientId: string | null = null;
+    let socket: Socket | null = null;
+
+    return {
+      onOpen(_evt, ws) {
+        // 半開き接続への送信で broadcast が止まらないよう send を保護する。
+        socket = {
+          send: (d) => {
+            try {
+              ws.send(d);
+            } catch {
+              // 送信先が閉じかけ。無視して他の宛先を続行。
+            }
+          },
+        };
+      },
+      onMessage(evt, ws) {
+        if (!socket) socket = { send: (d) => ws.send(d) };
+        let raw: unknown;
+        try {
+          raw = JSON.parse(evt.data as string);
+        } catch {
+          return; // JSON として壊れている。無視(接続は維持)
+        }
+        // 構造検証。不正・不足は破棄(msg.type にアクセスする前に弾く)。
+        const msg = parseClientMessage(raw);
+        if (!msg) return;
+        switch (msg.type) {
+          case "hello":
+            if (clientId) break; // 1接続につき hello は一度だけ。2回目以降は無視する。
+            // 拒否(例: 2人目の requester)された接続は clientId を確定しない → 以後のメッセージも無視される。
+            if (coordinator.hello(msg.clientId, msg.role, msg.displayName, socket)) {
+              clientId = msg.clientId;
+            }
+            break;
+          case "peer_status":
+            if (clientId) coordinator.peerStatus(clientId, msg.status); // hello 前は無視
+            break;
+          case "webrtc_signal":
+            if (clientId) coordinator.signal(msg);
+            break;
+        }
+      },
+      onClose() {
+        if (clientId && socket) coordinator.disconnect(clientId, socket);
+      },
+    };
+  }),
+);
+// /ws 配下も制御プレーン用に予約(SPAフォールバックに飲ませない)。
 app.get("/ws/*", (c) => c.notFound());
 
 // --- 参加URLの配布(#28) ---
@@ -62,5 +117,6 @@ console.log(
 export default {
   port,
   fetch: app.fetch,
+  websocket,
   ...(hasTls ? { tls: { cert: Bun.file(CERT), key: Bun.file(KEY) } } : {}),
 };
