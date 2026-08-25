@@ -7,7 +7,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const MODEL_NAME = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
-const MAX_SIZE_MB = 10240; // 10GB。桁違いの引数で意図せず巨大ファイルを作らないための上限
+// randomBytes() は 2^31-1 バイトまでしか受け付けない(Node/Bun共通)。
+// 2048MB(2048*1024*1024 = 2147483648)は1バイト超過してRangeErrorになるため、
+// 安全な整数値として2047を上限にする。
+const MAX_SIZE_MB = 2047;
 
 const rawArg = process.argv[2];
 const sizeMb = rawArg === undefined ? 50 : Number(rawArg);
