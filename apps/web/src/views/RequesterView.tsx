@@ -6,6 +6,7 @@ import { DevPanel } from "../components/DevPanel";
 import { JoinQr } from "../components/JoinQr";
 import { useCluster } from "../hooks/useCluster";
 import { useWebrtcSignaling } from "../hooks/useWebrtcSignaling";
+import { usePeerManager } from "../hooks/usePeerManager";
 import { getClientId } from "../lib/clientId";
 import { MODEL_NAME, TOTAL_LAYERS } from "../config";
 import type { Phase } from "../types/cluster";
@@ -39,6 +40,12 @@ export function RequesterView() {
 
   const { phase } = state;
 
+  // 各peerとのDataChannelの上でRPCを話す側(RPCクライアント役)。
+  // ①のWASMが起動したら `Module.PeerManager = rpc.manager` で載せる
+  const rpc = usePeerManager({
+    onError: (message) => dispatch({ type: "failed", message }),
+  });
+
   // generation_start の顔ぶれ全員へofferを出す。フェーズの判断はしない
   const rtc = useWebrtcSignaling({
     role: "requester",
@@ -46,6 +53,7 @@ export function RequesterView() {
     enabled: true,
     lastMessage,
     send,
+    ...rpc.handlers,
     onFailed: (message) => dispatch({ type: "failed", message }),
   });
   const distribution =

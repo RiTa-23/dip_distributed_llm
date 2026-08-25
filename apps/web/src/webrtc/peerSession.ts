@@ -67,6 +67,7 @@ export function createPeerSession({
         onClose: () => {
           if (disposed) return;
           open = false;
+          callbacks.onClose(generation, from);
           callbacks.onChange();
         },
         // 世代の判定は呼び出し側(useWebrtcSignaling)。ここは通り道だけ用意する

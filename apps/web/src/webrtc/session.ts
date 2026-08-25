@@ -21,8 +21,14 @@ export const defaultPeerConnectionFactory: PeerConnectionFactory = () =>
 export type SessionCallbacks = {
   /** DataChannelが開いた。①の startWasmClient / startWasmPeerServer へ渡す口 */
   onOpen: (generation: number, remoteId: string, channel: RTCDataChannel) => void;
-  /** DataChannel上でデータが届いた。①のRPC連携が入るまでは通り道だけ用意しておく */
+  /** DataChannel上でデータが届いた。PeerManager の handleMessage へ渡す口 */
   onData: (generation: number, remoteId: string, data: unknown) => void;
+  /**
+   * DataChannelが閉じた。PeerManager の detach へ渡す口。
+   * 載っている論理接続を畳ませないと、待たせているrecvが起きないままになる。
+   * teardown() は受け口を外してから閉じるので、こちらは飛ばない。
+   */
+  onClose: (generation: number, remoteId: string) => void;
   /** 接続が張れなかった、または落ちた */
   onFailed: (generation: number, remoteId: string, message: string) => void;
   /** 開通数などが変わった。画面の進捗表示を更新させるためだけに呼ぶ */

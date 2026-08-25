@@ -99,6 +99,8 @@ apps/web/src/
 │   ├── useJoinUrl.ts          QRに入れる参加URLを /join-info から受け取る
 │   │                          (応答の検証は lib/joinInfo.ts)
 │   ├── useWebrtcSignaling.ts  webrtc_signalの送受信とDataChannelの生き死に
+│   ├── usePeerManager.ts      開いたDataChannelとllama.cppのRPCを繋ぐ
+│   │                          (useWebrtcSignaling へ広げて渡す形で返す)
 │   └── useHonoSocket.mock.ts  Honoの代わり。本物と同じ形を返す
 ├── lib/
 │   ├── clientId.ts            localStorageに保存するclientId(役割ごとに別キー)
@@ -109,7 +111,9 @@ apps/web/src/
 ├── webrtc/                    Reactに依存しない接続の組み立て
 │   ├── session.ts             共通の型・世代の判定・candidateの順番待ち
 │   ├── peerSession.ts         参加者側。offerを受けてanswerを返す
-│   └── requesterSession.ts    発表者側。全参加者へofferを出す
+│   ├── requesterSession.ts    発表者側。全参加者へofferを出す
+│   └── peerManager.ts         開いたDataChannelにllama.cppのRPCを載せる
+│                              (WASM側が呼ぶ Module.PeerManager の実装)
 ├── components/                両画面で使う部品。1部品1フォルダ相当
 │   ├── TopBar / StatusBlock / LayerBar / ProgressBar / Metric / DevPanel
 │   ├── JoinQr                 参加者を集めるQR(発表者画面のサイドバー)
@@ -220,13 +224,20 @@ const { state, dispatch, send, assignments, debug } = useCluster({ enabled: true
 
 ## データプレーンの繋ぎ込み(ステップ4)
 
-`webrtc_signal`(offer / answer / ice-candidate)を `/ws` に載せて `RTCPeerConnection` を張り、DataChannel `rpc` が開くまでを実装しました。**その先(RPCのバイナリ通信)は①の担当**です。
+`webrtc_signal`(offer / answer / ice-candidate)を `/ws` に載せて `RTCPeerConnection` を張り、DataChannel `rpc` が開くまでを実装しました。
 
-入口は [`hooks/useWebrtcSignaling.ts`](../apps/web/src/hooks/useWebrtcSignaling.ts) 1つで、両画面が同じ形で呼びます。
+**その先(RPCのバイナリ通信)も同じ担当が持つことになりました(2026/8/25)。** [`webrtc/peerManager.ts`](../apps/web/src/webrtc/peerManager.ts) が、開いたDataChannelの上にllama.cppのRPCを載せます。①に残るのはWASMのビルドだけです。契約と枠の形は `docs/webrtc-implementation.md` の「データプレーン」節が正です。
+
+入口は [`hooks/useWebrtcSignaling.ts`](../apps/web/src/hooks/useWebrtcSignaling.ts) と [`hooks/usePeerManager.ts`](../apps/web/src/hooks/usePeerManager.ts) の2つで、両画面が同じ形で呼びます。
 
 ```tsx
-const rtc = useWebrtcSignaling({ role: "peer", myId, enabled: joined, lastMessage, send });
+const rpc = usePeerManager({ onError: (message) => dispatch({ type: "failed", message }) });
+const rtc = useWebrtcSignaling({
+  role: "peer", myId, enabled: joined, lastMessage, send,
+  ...rpc.handlers, // onOpen / onData / onClose / onReset
+});
 // rtc: { generation, expectedIds, openIds, status }
+// rpc.manager: WASMが来たら Module.PeerManager に載せる本体
 ```
 
 このフックが持つのも**接続と受け渡しだけ**で、フェーズの判断はしません(`useHonoSocket.ts` と同じ)。ビュー側は `rtc.status === "open"` を見て `datachannel_open` を出すだけです。役割ごとの違いはフックの中の分岐ではなく [`webrtc/`](../apps/web/src/webrtc) の2実装(`createPeerSession` / `createRequesterSession`)にあり、どちらも `start` / `accept` / `teardown` の同じ形を返します。
@@ -242,6 +253,7 @@ const rtc = useWebrtcSignaling({ role: "peer", myId, enabled: joined, lastMessag
 | `generation_aborted` の受信時 | 遅れて届いた古い中断通知が、始まったばかりの編成を巻き込む |
 | DataChannelの開通時 | 古い世代の接続が遅れて開き、再編成中の画面が `datachannel_open` で稼働中へ戻る |
 | データの受信時 | 前の編成で計算されたぶんが、今の生成の結果に混ざる |
+| DataChannelが閉じたとき | 遅れて閉じた古い接続が、同じ相手との現行のRPCを巻き添えに切る |
 
 判定そのものは [`webrtc/session.ts`](../apps/web/src/webrtc/session.ts) の `isStaleAbort` / `isStaleForCurrent` で、テストは [`webrtc/session.test.ts`](../apps/web/src/webrtc/session.test.ts) にあります。
 
@@ -263,6 +275,7 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 
 - **TURNは持ちません。** 会場のAPアイソレーションが有効だとP2Pが成立しません(`docs/webrtc-implementation.md`)。ローカル検証では踏みません
 - **WebRTCの失敗で `peer_status: "error"` は送っていません。** 送るとサーバの「全員ready」が崩れて次の世代が始まらず、1人の失敗で全体が止まるためです。今は画面だけ `error` にしています
+- **WASM本体がありません。** `peerManager.ts` は両画面に繋ぎ込み済みで、DataChannelが開けば `attach` まで走ります。ただし `Module.PeerManager` に差し込む相手(`llmlet-mod.js` / `.wasm`)が①からまだ来ていないため、実際にRPCのバイト列が流れるところまでは繋がっていません
 
 ## 分担
 
@@ -285,10 +298,11 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 
 ### ①(コア分散基盤)へ
 
-余裕があれば、という前提の依頼です。無くても画面は成立します。
+1つ目は必須です。2つ目以降は余裕があれば、という前提の依頼で、無くても画面は成立します。
 
-1. `getLayerAssignment()` … 各ピアの担当層。無い場合は層番号の表示を諦めます
-2. `onComputeStart` / `onComputeEnd` … 参加者側で「自分の番」が来た/終わったの通知。あると処理回数・処理時間・脈動が実測になります。無い場合は `RTCPeerConnection.getStats()` の250ms間隔ポーリングで粗く代替します
+1. **WASMのビルド(`llmlet-mod.js` / `.wasm`)を出してください。** RPCの橋渡し([`webrtc/peerManager.ts`](../apps/web/src/webrtc/peerManager.ts))はこちらで書き終えていますが、差し込む相手が無いと動きません。ビルド時の必須条件は `-sEXPORTED_RUNTIME_METHODS` に `release_conn` を含めることです(詳細は `docs/webrtc-implementation.md`)
+2. `getLayerAssignment()` … 各ピアの担当層。無い場合は層番号の表示を諦めます
+3. `onComputeStart` / `onComputeEnd` … 参加者側で「自分の番」が来た/終わったの通知。あると処理回数・処理時間・脈動が実測になります。無い場合は `RTCPeerConnection.getStats()` の250ms間隔ポーリングで粗く代替します
 
 **今の層の割り当ては均等割りの仮置きです**([`lib/assignments.ts`](../apps/web/src/lib/assignments.ts))。表示専用で、割り当ての決定には使っていません。本物の配分はllama.cppが空きメモリから比例配分します(`AGENTS.md` のアーキテクチャ前提3)。
 
@@ -311,5 +325,6 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 ## 次にやること
 
 1. ~~**WebRTCのシグナリング(`webrtc_signal` の送受信)。**~~ 入りました(#37)。上の「データプレーンの繋ぎ込み(ステップ4)」を参照
-2. **①へDataChannelを渡す。** `useWebrtcSignaling` の `onOpen(remoteId, channel)` / `onData(remoteId, data)` が受け口です。参加者側は `startWasmPeerServer(channel)`、発表者側は開いた全チャネルを `startWasmClient(channels)` へ渡す形を想定しています
-3. 上の「②へ」の2番(新しい参加者が来たときの再編成)を②と詰める
+2. ~~**①へDataChannelを渡す。**~~ 担当が変わり、RPCの繋ぎ込みまでこちらで持ちます。橋渡しの本体([`webrtc/peerManager.ts`](../apps/web/src/webrtc/peerManager.ts))と、両画面への繋ぎ込み([`hooks/usePeerManager.ts`](../apps/web/src/hooks/usePeerManager.ts))が入りました
+3. **WASMが来たら `Module.PeerManager = rpc.manager` を差し込む。** ①のビルド(`llmlet-mod.js` / `.wasm`)待ちです。差し込む場所(`startClient` / `startServer` 相当の起動処理)以外は書き終わっています
+4. 上の「②へ」の2番(新しい参加者が来たときの再編成)を②と詰める

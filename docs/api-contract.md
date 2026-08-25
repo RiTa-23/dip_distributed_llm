@@ -49,7 +49,9 @@ SDP/ICE candidateをHono経由で相手に転送。requester→peer、peer→req
 
 ## データプレーン注記
 
-`generation_start`を受けたrequesterが各peerとWebRTC接続確立後、DataChannel上でRPC通信。中身はHono/React側で解釈不要(①のWASM連携コードが担当)。トークンストリーミング生成はrequesterブラウザ内で完結(Hono経由のtokenメッセージは存在しない)。
+`generation_start`を受けたrequesterが各peerとWebRTC接続確立後、DataChannel上でRPC通信。**Honoは中身に一切関与しない**(この契約の対象外)。トークンストリーミング生成はrequesterブラウザ内で完結(Hono経由のtokenメッセージは存在しない)。
+
+DataChannel上の枠(論理接続の開閉とデータの分割)はReact側の `apps/web/src/webrtc/peerManager.ts` が扱い、その中身のRPCバイト列はWASM版llama.cppが解釈する。詳細は `webrtc-implementation.md` の「データプレーン」節。
 
 ## 設計メモ
 
