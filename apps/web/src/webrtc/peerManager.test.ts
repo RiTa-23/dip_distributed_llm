@@ -299,6 +299,35 @@ describe("切断", () => {
     pair.requester.close();
     expect(pair.requester.openFds()).toEqual([]);
   });
+
+  // 世代が変わると usePeerManager が同じ実体に close() を呼び、次の世代でも使い回す。
+  // このとき accept の待機を捨てると、WASM側が Atomics.wait から戻れなくなる
+  test("accept待ちのままcloseしても、次の世代で繋ぎ直せばfdが返る", () => {
+    const peer = createPeerManager();
+
+    let serverFd = -2;
+    // 第1世代: 相手が来る前からWASMは accept で待っている
+    peer.accept((fd) => {
+      serverFd = fd;
+    });
+    expect(serverFd).toBe(-2);
+
+    // 世代交代。DataChannelは張り直しになる
+    peer.close();
+    expect(serverFd).toBe(-2);
+
+    // 第2世代: 新しい回線を付けて、相手からCONNECTが届く
+    const accepted: ArrayBuffer[] = [];
+    const wire = createWire((data) => accepted.push(data));
+    peer.attach(REQUESTER_ID, wire.channel);
+    peer.handleMessage(REQUESTER_ID, new Uint8Array([0x01]).buffer);
+
+    expect(serverFd).toBeGreaterThanOrEqual(0);
+    expect(peer.openFds()).toEqual([serverFd]);
+    // ACCEPTEDを返しているので、相手のconnectも完了する
+    expect(accepted.length).toBe(1);
+    expect(new Uint8Array(accepted[0] ?? new ArrayBuffer(0))[0]).toBe(0x02);
+  });
 });
 
 describe("送信が失敗したとき", () => {

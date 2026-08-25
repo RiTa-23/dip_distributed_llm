@@ -430,11 +430,24 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
       if (conn) conn.moduleBuf = ptr;
     },
 
+    /**
+     * 回線と論理接続を全部畳む。世代が変わるたびに呼ばれる
+     * (`usePeerManager` の `onReset`)。同じ実体をそのまま次の世代でも使う。
+     *
+     * **`acceptWaiters` だけは持ち越す。** 捨てるとWASM側が止まる:
+     * peerはRPCサーバー役なので、繋がる前から `accept` で待っていることがあり、
+     * その待機を消すと `done` を呼ぶ者がいなくなって `Atomics.wait` から戻れない。
+     * 次の世代のCONNECTが来ても `readyFds` に積まれるだけで、WASMは
+     * `accept` の中に閉じ込められたまま二度と出てこない。
+     *
+     * 持ち越して困らないのは、llama.cpp側の `accept` に世代の区別がなく
+     * 「次の相手を待つ」以上の意味を持たないため。待機は1つのpthreadにつき
+     * 1件までなので溜まることもない。
+     */
     close: () => {
       for (const conn of [...conns.values()]) destroy(conn);
       links.clear();
       readyFds.length = 0;
-      acceptWaiters.length = 0;
     },
   };
 }

@@ -236,6 +236,8 @@ const rtc = useWebrtcSignaling({
 
 `PeerManager` の実体はマウント中ずっと同じものです。一度 `Module.PeerManager` に載せた後で差し替える手段がないため、世代が変わっても作り直さず `close()` で畳んで使い回します。
 
+そのため **`close()` は `accept` の待機だけ持ち越します。** peerはRPCサーバー役なので、繋がる前から `accept` で待っていることがあります。世代交代でその待機を消すと `done` を呼ぶ者がいなくなり、WASM側は `Atomics.wait` から戻れません。次の世代のCONNECTが来ても待機者がいないので `readyFds` に積まれるだけで、pthreadは `accept` の中に閉じ込められたままになります。llama.cpp側の `accept` に世代の区別はなく「次の相手を待つ」以上の意味を持たないので、持ち越して困ることはありません。
+
 ### まだ無いもの
 
 WASM本体(`llmlet-mod.js` / `.wasm`)が無いため、`startClient` / `startServer` に相当する起動処理がまだ書けません。ビルドが来たら、その起動処理の中で次の2つを渡せば繋がります。
