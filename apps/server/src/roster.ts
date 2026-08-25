@@ -69,6 +69,17 @@ function hasRequester(state: ClusterState): boolean {
 }
 
 /**
+ * clientId とは別の requester が既に接続しているか。
+ * 同時1リクエスト固定(AGENTS.md 前提5)の判定に使う。同一clientId(リロード)は別物扱いしない。
+ */
+export function hasOtherRequester(state: ClusterState, clientId: string): boolean {
+  for (const [id, c] of state.clients) {
+    if (c.role === "requester" && id !== clientId) return true;
+  }
+  return false;
+}
+
+/**
  * idle かつ「全peer ready」かつ「requester 接続中」のときだけ次の世代を開始する。
  * active 中は発火しない(AGENTS.md 前提4: 増減は次の世代開始タイミングでのみ反映)。
  * requester 不在での開始を防ぐ(orchestrator が居ない生成を作らない)。

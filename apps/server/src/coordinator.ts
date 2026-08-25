@@ -17,10 +17,24 @@ export class Coordinator {
   private readonly state = roster.createState();
   private readonly sockets = new Map<string, Socket>();
 
-  hello(clientId: string, role: Role, displayName: string, socket: Socket): void {
+  /**
+   * hello を受け付けたら true、拒否したら false を返す。
+   * 拒否した接続は socket を保持しない(以後のシグナリング中継にも使われない)。
+   */
+  hello(clientId: string, role: Role, displayName: string, socket: Socket): boolean {
+    // 同時1リクエスト固定(AGENTS.md 前提5): 別clientIdのrequesterが既にいれば拒否する。
+    if (role === "requester" && roster.hasOtherRequester(this.state, clientId)) {
+      return false;
+    }
+    // 同一clientIdの張り替え(リロード等)。旧登録を切断扱いにして、生成中なら再編成を走らせてから入れ直す。
+    const existing = this.sockets.get(clientId);
+    if (existing && existing !== socket) {
+      this.run(roster.applyDisconnect(this.state, clientId));
+    }
     // 先に socket を登録してから配信することで、hello を送った本人にも roster_update が届く。
     this.sockets.set(clientId, socket);
     this.run(roster.applyHello(this.state, clientId, role, displayName));
+    return true;
   }
 
   peerStatus(clientId: string, status: PeerStatus): void {

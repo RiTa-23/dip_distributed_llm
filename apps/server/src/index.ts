@@ -1,8 +1,8 @@
 import { Hono } from "hono";
 import { createBunWebSocket, serveStatic } from "hono/bun";
 import { existsSync } from "node:fs";
-import type { ClientMessage } from "@dip_distributed_llm/shared-types/messages";
 import { Coordinator, type Socket } from "./coordinator";
+import { parseClientMessage } from "./parse";
 
 const app = new Hono();
 const { upgradeWebSocket, websocket } = createBunWebSocket();
@@ -41,16 +41,22 @@ app.get(
       },
       onMessage(evt, ws) {
         if (!socket) socket = { send: (d) => ws.send(d) };
-        let msg: ClientMessage;
+        let raw: unknown;
         try {
-          msg = JSON.parse(evt.data as string) as ClientMessage;
+          raw = JSON.parse(evt.data as string);
         } catch {
-          return; // 不正なメッセージは無視(接続は維持)
+          return; // JSON として壊れている。無視(接続は維持)
         }
+        // 構造検証。不正・不足は破棄(msg.type にアクセスする前に弾く)。
+        const msg = parseClientMessage(raw);
+        if (!msg) return;
         switch (msg.type) {
           case "hello":
-            clientId = msg.clientId;
-            coordinator.hello(msg.clientId, msg.role, msg.displayName, socket);
+            if (clientId) break; // 1接続につき hello は一度だけ。2回目以降は無視する。
+            // 拒否(例: 2人目の requester)された接続は clientId を確定しない → 以後のメッセージも無視される。
+            if (coordinator.hello(msg.clientId, msg.role, msg.displayName, socket)) {
+              clientId = msg.clientId;
+            }
             break;
           case "peer_status":
             if (clientId) coordinator.peerStatus(clientId, msg.status); // hello 前は無視

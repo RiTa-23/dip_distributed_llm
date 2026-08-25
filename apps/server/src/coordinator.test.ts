@@ -88,4 +88,35 @@ describe("Coordinator wiring", () => {
     // 新接続 s2 は生きているので配信を受け取れる
     expect(typesOf(s2)).toContain("roster_update");
   });
+
+  test("2人目の requester(別clientId)は拒否され、保持も配信もされない", () => {
+    const co = new Coordinator();
+    const req1 = fakeSocket();
+    const req2 = fakeSocket();
+    expect(co.hello("req-1", "requester", "発表者1", req1)).toBe(true);
+    expect(co.hello("req-2", "requester", "発表者2", req2)).toBe(false);
+
+    // 拒否された req2 には何も送られていない
+    expect(req2.sent).toEqual([]);
+
+    // 以後の broadcast(peer 参加)も req2 には届かない(保持されていない)
+    req1.sent.length = 0;
+    co.hello("p1", "peer", "P1", fakeSocket());
+    expect(typesOf(req1)).toContain("roster_update");
+    expect(req2.sent).toEqual([]);
+  });
+
+  test("同一clientId の reconnect は active 中に generation_aborted を出す", () => {
+    const co = new Coordinator();
+    const req = fakeSocket();
+    const p1 = fakeSocket();
+    co.hello("req", "requester", "発表者", req);
+    co.hello("p1", "peer", "P1", p1);
+    co.peerStatus("p1", "ready"); // gen 1 開始
+    req.sent.length = 0;
+
+    // p1 がリロード再接続(新しい socket)
+    co.hello("p1", "peer", "P1", fakeSocket());
+    expect(typesOf(req)).toContain("generation_aborted");
+  });
 });
