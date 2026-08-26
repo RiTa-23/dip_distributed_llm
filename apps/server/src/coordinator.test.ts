@@ -158,3 +158,145 @@ describe("Coordinator wiring", () => {
     expect(typesOf(req)).toContain("generation_aborted");
   });
 });
+
+describe("status() のスナップショット(#58)", () => {
+  test("接続前は空の状態を返す", () => {
+    const co = new Coordinator();
+    const st = co.status();
+    expect(st.phase).toBe("idle");
+    expect(st.generation).toBe(0);
+    expect(st.requesterConnected).toBe(false);
+    expect(st.peers).toEqual([]);
+  });
+
+  test("requester の接続を反映する", () => {
+    const co = new Coordinator();
+    co.hello("req", "requester", "Req", fakeSocket());
+    expect(co.status().requesterConnected).toBe(true);
+  });
+
+  test("ロスターと世代を反映する", () => {
+    const co = new Coordinator();
+    co.hello("req", "requester", "Req", fakeSocket());
+    co.hello("p1", "peer", "P1", fakeSocket());
+    co.peerStatus("p1", "ready");
+
+    const st = co.status();
+    expect(st.phase).toBe("active");
+    expect(st.generation).toBe(1);
+    expect(st.peers.map((p) => p.clientId)).toEqual(["p1"]);
+    expect(st.activeGenerationPeerIds).toEqual(["p1"]);
+  });
+
+  test("読み出しても状態は変わらない", () => {
+    const co = new Coordinator();
+    co.hello("p1", "peer", "P1", fakeSocket());
+    const before = co.status();
+    co.status();
+    expect(co.status()).toEqual(before);
+  });
+
+  test("statsを書き換えても内部状態に影響しない(コピーを返す)", () => {
+    const co = new Coordinator();
+    co.hello("p1", "peer", "P1", fakeSocket());
+    const st = co.status();
+    st.stats.totalPeers = 999;
+    expect(co.status().stats.totalPeers).toBe(1);
+  });
+});
+
+describe("参加統計(#60)", () => {
+  test("peer の累計人数を数える(requester は数えない)", () => {
+    const co = new Coordinator();
+    co.hello("req", "requester", "Req", fakeSocket());
+    co.hello("p1", "peer", "P1", fakeSocket());
+    co.hello("p2", "peer", "P2", fakeSocket());
+    expect(co.status().stats.totalPeers).toBe(2);
+  });
+
+  test("同じ clientId の再接続は二重に数えない", () => {
+    const co = new Coordinator();
+    const first = fakeSocket();
+    co.hello("p1", "peer", "P1", first);
+    co.disconnect("p1", first);
+    co.hello("p1", "peer", "P1", fakeSocket()); // リロードで戻ってきた
+    expect(co.status().stats.totalPeers).toBe(1);
+  });
+
+  test("同時接続の最大値を覚えている(減っても下がらない)", () => {
+    const co = new Coordinator();
+    const a = fakeSocket();
+    const b = fakeSocket();
+    const c = fakeSocket();
+    co.hello("p1", "peer", "P1", a);
+    co.hello("p2", "peer", "P2", b);
+    co.hello("p3", "peer", "P3", c);
+    expect(co.status().stats.peakPeers).toBe(3);
+
+    co.disconnect("p2", b);
+    co.disconnect("p3", c);
+    expect(co.status().peers.length).toBe(1);
+    expect(co.status().stats.peakPeers).toBe(3); // 最大値は下がらない
+  });
+
+  test("開始した世代の数を数える", () => {
+    const co = new Coordinator();
+    const req = fakeSocket();
+    const p1 = fakeSocket();
+    const p2 = fakeSocket();
+    co.hello("req", "requester", "Req", req);
+    co.hello("p1", "peer", "P1", p1);
+    co.peerStatus("p1", "ready"); // gen 1
+    co.hello("p2", "peer", "P2", p2);
+    co.peerStatus("p2", "ready"); // gen 2(生成中の加入で再編成)
+    expect(co.status().stats.generationsStarted).toBe(2);
+  });
+});
+
+describe("状態遷移のログ(#58)", () => {
+  test("渡さなければ何も出さない(テスト出力を汚さない)", () => {
+    const co = new Coordinator();
+    expect(() => co.hello("p1", "peer", "P1", fakeSocket())).not.toThrow();
+  });
+
+  test("ロスターの増減と世代の開始を1行ずつ流す", () => {
+    const lines: string[] = [];
+    const co = new Coordinator((l) => lines.push(l));
+    co.hello("req", "requester", "Req", fakeSocket());
+    co.hello("p1", "peer", "P1", fakeSocket());
+    co.peerStatus("p1", "ready");
+
+    expect(lines.some((l) => l.includes("roster peers=1"))).toBe(true);
+    expect(lines.some((l) => l.includes("generation_start gen=1 peers=p1"))).toBe(true);
+  });
+
+  test("中断は理由まで出す", () => {
+    const lines: string[] = [];
+    const co = new Coordinator((l) => lines.push(l));
+    const req = fakeSocket();
+    const p1 = fakeSocket();
+    co.hello("req", "requester", "Req", req);
+    co.hello("p1", "peer", "P1", p1);
+    co.peerStatus("p1", "ready");
+    co.disconnect("p1", p1);
+
+    expect(
+      lines.some((l) => l.includes("generation_aborted") && l.includes("peer_disconnected")),
+    ).toBe(true);
+  });
+
+  test("signal の中継はログに出さない(量が多く埋もれるため)", () => {
+    const lines: string[] = [];
+    const co = new Coordinator((l) => lines.push(l));
+    co.hello("a", "peer", "A", fakeSocket());
+    co.hello("b", "peer", "B", fakeSocket());
+    const before = lines.length;
+    co.signal({
+      type: "webrtc_signal",
+      targetId: "b",
+      fromId: "a",
+      payload: { kind: "offer", sdp: "v=0..." },
+    });
+    expect(lines.length).toBe(before);
+  });
+});

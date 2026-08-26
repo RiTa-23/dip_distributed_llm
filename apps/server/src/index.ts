@@ -8,7 +8,8 @@ import { buildJoinUrls } from "./lanAddress";
 
 const app = new Hono();
 const { upgradeWebSocket, websocket } = createBunWebSocket();
-const coordinator = new Coordinator();
+// 状態遷移を1行ずつ出す(#58)。デモ中の切り分けに使う
+const coordinator = new Coordinator((line) => console.log(line));
 
 // --- TLS(#14 開発用: mkcert) ---
 // 証明書があれば HTTPS、無ければ HTTP で起動(CI・クイック確認用)。
@@ -96,6 +97,11 @@ app.get("/ws/*", (c) => c.notFound());
 app.get("/join-info", (c) =>
   c.json({ joinUrls: buildJoinUrls(networkInterfaces(), hasTls ? "https" : "http", port) }),
 );
+
+// --- 状態の確認(#58) ---
+// デモ中に「何人つながっていて、どの世代で、誰が ready か」をブラウザで見るための口。
+// 読み取り専用で、状態は一切変えない。/ws と同じ理由で静的配信より前に置く。
+app.get("/status", (c) => c.json(coordinator.status()));
 
 // --- 静的配信(#12) ---
 // マウント順が重要: models / wasm を先に処理し、最後に web-dist(SPA)へフォールバックする。

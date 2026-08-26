@@ -13,9 +13,54 @@ export interface Socket {
   send(data: string): void;
 }
 
+/** `/status` が返す形(#58)。読み取り専用のスナップショット。 */
+export type StatusSnapshot = {
+  phase: roster.GenerationPhase;
+  generation: number;
+  acceptingGrowth: boolean;
+  requesterConnected: boolean;
+  peers: { clientId: string; displayName: string; status: string }[];
+  activeGenerationPeerIds: string[] | null;
+  stats: roster.ClusterStats;
+};
+
+/** 配信したメッセージを受け取る口(#58)。既定は何もしない。 */
+export type EventLogger = (line: string) => void;
+
 export class Coordinator {
   private readonly state = roster.createState();
   private readonly sockets = new Map<string, Socket>();
+  private readonly log: EventLogger;
+
+  /**
+   * `log` を渡すと状態が動いたときに1行流す(#58)。
+   * 既定を無音にしてあるのは、テストの出力を汚さないため。
+   * サーバ本体(index.ts)からは console.log を渡す。
+   */
+  constructor(log: EventLogger = () => {}) {
+    this.log = log;
+  }
+
+  /**
+   * 今の状態を読み出す(#58)。デモ中に「何人つながっていて、どの世代で、誰が ready か」を
+   * サーバ側から確認する手段が console.log の1行しか無かったため。
+   * 状態は変更しない。
+   */
+  status(): StatusSnapshot {
+    let requesterConnected = false;
+    for (const c of this.state.clients.values()) {
+      if (c.role === "requester") requesterConnected = true;
+    }
+    return {
+      phase: this.state.phase,
+      generation: this.state.generation,
+      acceptingGrowth: this.state.acceptingGrowth,
+      requesterConnected,
+      peers: roster.currentRoster(this.state),
+      activeGenerationPeerIds: this.state.activeGenerationPeerIds,
+      stats: { ...this.state.stats },
+    };
+  }
 
   /**
    * hello を受け付けたら true、拒否したら false を返す。
@@ -58,9 +103,34 @@ export class Coordinator {
     this.run(roster.applyDisconnect(this.state, clientId));
   }
 
+  /**
+   * 状態が動いたときだけ1行流す(#58)。
+   * roster_update は人が増減するたびに飛んで量が多いので、人数だけに畳む。
+   * webrtc_signal は転送のたびに出ると埋もれるので出さない。
+   */
+  private logEffect(e: roster.Effect): void {
+    if (e.kind !== "broadcast") return;
+    const m = e.msg;
+    const at = new Date().toISOString();
+    switch (m.type) {
+      case "roster_update":
+        this.log(`[${at}] roster peers=${m.peers.length} phase=${this.state.phase}`);
+        break;
+      case "generation_start":
+        this.log(`[${at}] generation_start gen=${m.generation} peers=${m.peerIds.join(",")}`);
+        break;
+      case "generation_aborted":
+        this.log(`[${at}] generation_aborted gen=${m.generation} reason=${m.reason}`);
+        break;
+      default:
+        break;
+    }
+  }
+
   private run(effects: roster.Effect[]): void {
     for (const e of effects) {
       const data = JSON.stringify(e.msg);
+      this.logEffect(e);
       if (e.kind === "broadcast") {
         for (const s of this.sockets.values()) s.send(data);
       } else {
