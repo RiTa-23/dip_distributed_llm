@@ -153,6 +153,10 @@ export function PeerView() {
           showDot={phase !== "idle"}
         />
 
+        {phase === "error" && state.errorMessage && (
+          <p className={styles.errorDetail}>{state.errorMessage}</p>
+        )}
+
         {phase === "idle" && (
           <div className={styles.form}>
             <input
