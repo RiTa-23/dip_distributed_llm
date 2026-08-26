@@ -92,6 +92,11 @@ function reorganizingText(reason: AbortReason | null) {
   return REORGANIZING_TEXT[reason] ?? REORGANIZING_FALLBACK;
 }
 
+/**
+ * 参加者(peer)画面。参加 → エンジン起動 → 発表者との直接接続 → 貢献中、という
+ * 1本の流れを出す。フェーズを決めるのは clusterReducer で、ここは表示と、
+ * 参加・離脱・繋ぎ直しの操作だけを持つ。
+ */
 export function PeerView() {
   const [joined, setJoined] = useState(false);
   const [displayName, setDisplayName] = useState(DEFAULT_DISPLAY_NAME);
@@ -177,6 +182,7 @@ export function PeerView() {
     }
   }, [phase, rtc.status, dispatch]);
 
+  /** 参加する。ここから `enabled` が立ち、`/ws` への接続が始まる */
   const join = useCallback(() => {
     // 前回参加したぶんを持ち越さない。世代をまたいでも0には戻さないので、
     // 0に戻すのはここだけ
@@ -184,20 +190,20 @@ export function PeerView() {
     setJoined(true);
   }, [rpc.manager]);
 
+  /** 離脱する。接続を畳んで画面を最初に戻す */
   const leave = () => {
     setJoined(false);
     dispatch({ type: "reset" });
   };
 
+  /** 繋ぎ直しの予約。この値で描画は変わらないので state ではなく ref に持つ */
+  const wantsRejoin = useRef(false);
+
   /**
    * 参加し直す。leave() と join() を続けて呼んでも、同じ描画のあいだは `enabled` が
    * false を通らず useHonoSocket の後片付けが走らない(WebSocketが閉じないので
    * 繋ぎ直しにならない)。離脱が反映された次の描画で join() を通す。
-   *
-   * 予約を state ではなく ref に持つのは、この値で描画を変えないため。
    */
-  const wantsRejoin = useRef(false);
-
   const rejoin = () => {
     wantsRejoin.current = true;
     leave();
