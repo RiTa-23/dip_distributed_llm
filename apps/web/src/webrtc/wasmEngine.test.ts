@@ -1,11 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { createEngineStarter, startWasmEngine } from "./wasmEngine";
-import type { EngineLogger, LlmletModule, StartEngineOptions } from "./wasmEngine";
+import { loadRuntimeModule, startPeerRuntime, startRequesterRuntime } from "./wasmEngine";
+import type { EngineLogger, PeerRuntime, RequesterRuntime } from "./wasmEngine";
 import type { LlamaPeerManager } from "./peerManager";
 
-// ①のビルドはまだ無いので、読み込みの結果だけを差し替えて分岐を見る。
-// 見たいのは「モジュールが有る/無い」でこちらの振る舞いが変わることと、
-// 無いほうが既定である今もダミー経路で必ず準備完了まで進むこと。
+// 境界は `llmlet-runtime.js` の名前付きexport `startPeer()` / `startRequester()`。
+// ここで見たいのは、
+//
+// - 渡すべきもの(manager / peerIds の順序 / model / onText)がそのまま届くこと
+// - **読み込めない・関数が無い・起動が投げる、のどれもがダミーや準備完了にならないこと**
+// - 読み込みの途中で `stop()` しても、出来たRuntimeが確実に止まること
+//
+// 3つ目が特に効く。旧実装はEmscripten Moduleの上に `startServer` / `startClient` を
+// 探しに行き、無ければダミーへ落ちていた。`llmlet-mod.js` にその名前は無いので、
+// bundleを置くと「import成功 → entry無し → fallback → 準備完了」という偽の成功が
+// 成立してしまう。それを二度と作らないための回帰テスト。
+
+const URL_STUB = "/wasm/llmlet-runtime.js";
 
 function createManager(): LlamaPeerManager {
   return {
@@ -19,7 +29,7 @@ function createManager(): LlamaPeerManager {
   };
 }
 
-function createLogger(): EngineLogger & { info: (m: string) => void; lines: string[] } {
+function createLogger(): EngineLogger & { lines: string[] } {
   const lines: string[] = [];
   return {
     lines,
@@ -28,255 +38,179 @@ function createLogger(): EngineLogger & { info: (m: string) => void; lines: stri
   };
 }
 
-/** テストのあいだは待ち時間を潰す。既定(2200ms)を待つ意味はない */
-function options(extra: Partial<StartEngineOptions> = {}): StartEngineOptions {
+type Recorded = { options: Record<string, unknown>; stopped: number };
+
+/** `startPeer` / `startRequester` を持つ偽モジュール */
+function createModule(recorded: Recorded, ready: Promise<void> = Promise.resolve()) {
+  const peer: PeerRuntime = {
+    ready,
+    stop: () => {
+      recorded.stopped += 1;
+      return Promise.resolve();
+    },
+  };
+  const requester: RequesterRuntime = {
+    ready,
+    generate: () => Promise.resolve(),
+    cancel: () => undefined,
+    stop: () => {
+      recorded.stopped += 1;
+      return Promise.resolve();
+    },
+  };
   return {
-    role: "peer",
-    manager: createManager(),
-    nodeId: "peer-1",
-    moduleUrl: "/wasm/llmlet-mod.js",
-    fallbackDelayMs: 1,
-    entryTimeoutMs: 5,
-    logger: createLogger(),
-    ...extra,
+    startPeer: (options: Record<string, unknown>) => {
+      recorded.options = options;
+      return peer;
+    },
+    startRequester: (options: Record<string, unknown>) => {
+      recorded.options = options;
+      return requester;
+    },
   };
 }
 
-describe("startWasmEngine", () => {
-  test("モジュールが無ければダミー経路へ落ちる(①のビルドが来るまでの既定)", async () => {
-    const logger = createLogger();
-    const result = await startWasmEngine(
-      options({
-        logger,
-        importModule: () => Promise.reject(new Error("404")),
-      }),
-    );
-
-    expect(result.mode).toBe("fallback");
-    if (result.mode === "fallback") expect(result.reason).toContain("読み込めませんでした");
-    // 成否がコンソールで区別できること
-    expect(logger.lines.some((line) => line.startsWith("warn"))).toBe(true);
-    expect(logger.lines.some((line) => line.startsWith("info"))).toBe(false);
+describe("loadRuntimeModule", () => {
+  test("名前付きexportを拾う", async () => {
+    const recorded: Recorded = { options: {}, stopped: 0 };
+    const mod = await loadRuntimeModule(URL_STUB, () => Promise.resolve(createModule(recorded)));
+    expect(typeof mod.startPeer).toBe("function");
+    expect(typeof mod.startRequester).toBe("function");
   });
 
-  test("モジュールがあれば PeerManager を差し込んで起動する", async () => {
-    const manager = createManager();
-    const calls: string[] = [];
-    const released: number[] = [];
-    const mod: LlmletModule = {
-      release_conn: (ptr) => released.push(ptr),
-      startServer: (nodeId: string) => calls.push(`startServer:${nodeId}`),
-    };
-    const logger = createLogger();
-
-    const result = await startWasmEngine(
-      options({
-        manager,
-        logger,
-        importModule: () => Promise.resolve({ default: () => mod }),
-      }),
+  test("default にまとめて入っている形も拾う", async () => {
+    const recorded: Recorded = { options: {}, stopped: 0 };
+    const mod = await loadRuntimeModule(URL_STUB, () =>
+      Promise.resolve({ default: createModule(recorded) }),
     );
-
-    expect(result.mode).toBe("wasm");
-    if (result.mode !== "wasm") return;
-    expect(mod.PeerManager).toBe(manager);
-    expect(calls).toEqual(["startServer:peer-1"]);
-    expect(result.entry).toBe("startServer");
-    // releaseBuf はWASM側の release_conn へ素通しする
-    result.releaseBuf?.(1234);
-    expect(released).toEqual([1234]);
-    expect(logger.lines.some((line) => line.startsWith("info"))).toBe(true);
+    expect(typeof mod.startPeer).toBe("function");
   });
 
-  test("factory を介さず組み立て済みのモジュールが来ても載る", async () => {
-    const manager = createManager();
-    const mod: LlmletModule = { startServer: () => undefined };
-
-    const result = await startWasmEngine(
-      options({ manager, importModule: () => Promise.resolve(mod) }),
-    );
-
-    expect(result.mode).toBe("wasm");
-    expect(mod.PeerManager).toBe(manager);
+  test("読み込めなければ投げる。ダミーへ落ちない", async () => {
+    await expect(
+      loadRuntimeModule(URL_STUB, () => Promise.reject(new Error("404"))),
+    ).rejects.toThrow("404");
   });
 
-  test("release_conn が無いビルドでも起動し、releaseBuf だけ省く", async () => {
-    const mod: LlmletModule = { startServer: () => undefined };
-
-    const result = await startWasmEngine(
-      options({ importModule: () => Promise.resolve({ default: () => mod }) }),
-    );
-
-    expect(result.mode).toBe("wasm");
-    if (result.mode === "wasm") expect(result.releaseBuf).toBeUndefined();
-  });
-
-  test("発表者は rpc-client 役の起動関数を呼ぶ", async () => {
-    const calls: string[] = [];
-    const mod: LlmletModule = {
-      startServer: () => calls.push("startServer"),
-      startClient: () => calls.push("startClient"),
-    };
-
-    const result = await startWasmEngine(
-      options({
-        role: "requester",
-        importModule: () => Promise.resolve({ default: () => mod }),
-      }),
-    );
-
-    expect(result.mode).toBe("wasm");
-    expect(calls).toEqual(["startClient"]);
-  });
-
-  test("起動関数が見つからなければダミー経路へ落ちる", async () => {
-    const mod: LlmletModule = { release_conn: () => undefined };
-
-    const result = await startWasmEngine(
-      options({ importModule: () => Promise.resolve({ default: () => mod }) }),
-    );
-
-    expect(result.mode).toBe("fallback");
-    if (result.mode === "fallback") expect(result.reason).toContain("起動関数が見つかりません");
-  });
-
-  test("起動関数が失敗したらダミー経路へ落ちる", async () => {
-    const mod: LlmletModule = {
-      startServer: () => {
-        throw new Error("boom");
-      },
-    };
-
-    const result = await startWasmEngine(
-      options({ importModule: () => Promise.resolve({ default: () => mod }) }),
-    );
-
-    expect(result.mode).toBe("fallback");
-    if (result.mode === "fallback") expect(result.reason).toContain("startServer()");
-  });
-
-  test("起動関数がPromiseで失敗した場合もダミー経路へ落ちる", async () => {
-    const mod: LlmletModule = { startServer: () => Promise.reject(new Error("boom")) };
-
-    const result = await startWasmEngine(
-      options({ importModule: () => Promise.resolve({ default: () => mod }) }),
-    );
-
-    expect(result.mode).toBe("fallback");
-  });
-
-  test("待ち受けに入ったまま返らない起動関数は、走っているものとして扱う", async () => {
-    // rpc-server役は戻らない作りがありうる。待ち続けると準備中のまま止まる
-    const mod: LlmletModule = { startServer: () => new Promise(() => undefined) };
-
-    const result = await startWasmEngine(
-      options({ entryTimeoutMs: 5, importModule: () => Promise.resolve({ default: () => mod }) }),
-    );
-
-    expect(result.mode).toBe("wasm");
-  });
-
-  test("中断されたらダミーの待ち時間を待たずに返る", async () => {
-    const controller = new AbortController();
-    controller.abort();
-    const started = Date.now();
-
-    const result = await startWasmEngine(
-      options({
-        fallbackDelayMs: 10_000,
-        signal: controller.signal,
-        importModule: () => Promise.reject(new Error("404")),
-      }),
-    );
-
-    expect(result.mode).toBe("fallback");
-    expect(Date.now() - started).toBeLessThan(1000);
+  test("startPeer / startRequester が無ければ投げる(旧 llmlet-mod.js を掴んだ場合)", async () => {
+    // Emscriptenのfactoryはdefault exportの関数。起動関数は生えていない
+    const emscriptenLike = { default: () => ({ PeerManager: undefined }) };
+    await expect(
+      loadRuntimeModule(URL_STUB, () => Promise.resolve(emscriptenLike)),
+    ).rejects.toThrow(/startPeer \/ startRequester がありません/);
   });
 });
 
-describe("createEngineStarter", () => {
-  /** 起動関数の呼ばれた回数と、読み込みを外から解決できる口を返す */
-  function createModuleSource() {
-    const state = { imports: 0, started: 0, release: [] as number[] };
-    let release: ((value: unknown) => void) | null = null;
-    const mod: LlmletModule = {
-      release_conn: (ptr) => state.release.push(ptr),
-      startServer: () => state.started++,
-    };
-    return {
-      state,
-      /** 保留していた読み込みを終わらせる */
-      finish: () => release?.({ default: () => mod }),
-      importModule: (): Promise<unknown> => {
-        state.imports++;
-        if (release) return Promise.resolve({ default: () => mod });
-        return new Promise((resolve) => {
-          release = resolve;
-        });
-      },
-    };
-  }
-
-  test("起動中に呼び直されたら相乗りする(離脱→再参加でrpc-serverを2つ立てない)", async () => {
-    const source = createModuleSource();
-    const starter = createEngineStarter();
-    const opts = options({ importModule: source.importModule });
-
-    // 1回目(参加)→ 起動が返る前に2回目(離脱してすぐ再参加)
-    const first = starter.start(opts);
-    const second = starter.start(opts);
-    source.finish();
-    const [a, b] = await Promise.all([first, second]);
-
-    expect(a).toBe(b);
-    expect(a.mode).toBe("wasm");
-    expect(source.state.imports).toBe(1);
-    expect(source.state.started).toBe(1);
-  });
-
-  test("一度載ったら次の参加では載せ直さない", async () => {
-    const source = createModuleSource();
-    const starter = createEngineStarter();
-    const opts = options({ importModule: source.importModule });
-
-    const first = starter.start(opts);
-    source.finish();
-    await first;
-    const again = await starter.start(opts);
-
-    expect(again.mode).toBe("wasm");
-    expect(source.state.imports).toBe(1);
-    expect(source.state.started).toBe(1);
-  });
-
-  test("中断されても、載ったことは覚えている", async () => {
-    // 起動が終わる直前に離脱した場合。忘れると再参加で startServer() をもう一度呼ぶ
-    const source = createModuleSource();
-    const starter = createEngineStarter();
-    const controller = new AbortController();
-    const opts = options({ importModule: source.importModule, signal: controller.signal });
-
-    const first = starter.start(opts);
-    controller.abort();
-    source.finish();
-    expect((await first).mode).toBe("wasm");
-
-    await starter.start(opts);
-    expect(source.state.started).toBe(1);
-  });
-
-  test("ダミー経路は覚えない(参加のたびに待たせる)", async () => {
-    let imports = 0;
-    const starter = createEngineStarter();
-    const opts = options({
-      importModule: () => {
-        imports++;
-        return Promise.reject(new Error("404"));
-      },
+describe("startPeerRuntime", () => {
+  test("managerを渡して起動する", async () => {
+    const recorded: Recorded = { options: {}, stopped: 0 };
+    const manager = createManager();
+    const logger = createLogger();
+    const box = startPeerRuntime({
+      manager,
+      moduleUrl: URL_STUB,
+      importModule: () => Promise.resolve(createModule(recorded)),
+      logger,
     });
 
-    expect((await starter.start(opts)).mode).toBe("fallback");
-    expect((await starter.start(opts)).mode).toBe("fallback");
-    expect(imports).toBe(2);
+    const runtime = await box.started;
+    await runtime.ready;
+    expect(recorded.options.peerManager).toBe(manager);
+    expect(logger.lines.some((l) => l.includes("startPeer()"))).toBe(true);
+  });
+
+  test("読み込みに失敗したら started が reject する。準備完了にはならない", async () => {
+    const box = startPeerRuntime({
+      manager: createManager(),
+      moduleUrl: URL_STUB,
+      importModule: () => Promise.reject(new Error("読み込み失敗")),
+      logger: createLogger(),
+    });
+    await expect(box.started).rejects.toThrow("読み込み失敗");
+  });
+
+  test("失敗しても stop() は投げない", async () => {
+    const box = startPeerRuntime({
+      manager: createManager(),
+      moduleUrl: URL_STUB,
+      importModule: () => Promise.reject(new Error("読み込み失敗")),
+      logger: createLogger(),
+    });
+    await expect(box.stop()).resolves.toBeUndefined();
+  });
+
+  test("読み込みの途中で stop() しても、出来たRuntimeを止める", async () => {
+    const recorded: Recorded = { options: {}, stopped: 0 };
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const box = startPeerRuntime({
+      manager: createManager(),
+      moduleUrl: URL_STUB,
+      importModule: async () => {
+        await gate;
+        return createModule(recorded);
+      },
+      logger: createLogger(),
+    });
+
+    // まだmoduleが届いていない時点で止める
+    const stopping = box.stop();
+    release();
+    await stopping;
+    expect(recorded.stopped).toBe(1);
+  });
+
+  test("stop() を重ねて呼んでも1回しか止めない", async () => {
+    const recorded: Recorded = { options: {}, stopped: 0 };
+    const box = startPeerRuntime({
+      manager: createManager(),
+      moduleUrl: URL_STUB,
+      importModule: () => Promise.resolve(createModule(recorded)),
+      logger: createLogger(),
+    });
+    await box.started;
+    await Promise.all([box.stop(), box.stop(), box.stop()]);
+    expect(recorded.stopped).toBe(1);
+  });
+});
+
+describe("startRequesterRuntime", () => {
+  test("peerIdsを順序ごと、modelとonTextをそのまま渡す", async () => {
+    const recorded: Recorded = { options: {}, stopped: 0 };
+    const deltas: string[] = [];
+    const box = startRequesterRuntime({
+      manager: createManager(),
+      moduleUrl: URL_STUB,
+      importModule: () => Promise.resolve(createModule(recorded)),
+      peerIds: ["peer-b", "peer-a", "peer-c"],
+      model: { kind: "url", url: "/models/x.gguf" },
+      onText: (delta) => deltas.push(delta),
+      logger: createLogger(),
+    });
+
+    await box.started;
+    // 並びがRPC deviceの登録順になる。ソートも重複排除もしない
+    expect(recorded.options.peerIds).toEqual(["peer-b", "peer-a", "peer-c"]);
+    expect(recorded.options.model).toEqual({ kind: "url", url: "/models/x.gguf" });
+
+    const onText = recorded.options.onText as (delta: string) => void;
+    onText("あ");
+    expect(deltas).toEqual(["あ"]);
+  });
+
+  test("関数が見つからなければ reject する", async () => {
+    const box = startRequesterRuntime({
+      manager: createManager(),
+      moduleUrl: URL_STUB,
+      importModule: () => Promise.resolve({ somethingElse: () => undefined }),
+      peerIds: ["peer-a"],
+      model: { kind: "url", url: "/models/x.gguf" },
+      onText: () => undefined,
+      logger: createLogger(),
+    });
+    await expect(box.started).rejects.toThrow(/startPeer \/ startRequester がありません/);
   });
 });

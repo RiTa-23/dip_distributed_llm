@@ -7,7 +7,7 @@ import { JoinQr } from "../components/JoinQr";
 import { useCluster } from "../hooks/useCluster";
 import { useWebrtcSignaling } from "../hooks/useWebrtcSignaling";
 import { usePeerManager } from "../hooks/usePeerManager";
-import type { GenerationEvent } from "../hooks/usePeerManager";
+import { useRequesterRuntime } from "../hooks/useRequesterRuntime";
 import { getClientId } from "../lib/clientId";
 import { MODEL_NAME, TOTAL_LAYERS } from "../config";
 import type { Phase } from "../types/cluster";
@@ -24,55 +24,44 @@ const NOTICE: Partial<Record<Phase, string>> = {
   error: "接続に失敗しました",
 };
 
-const DUMMY_ANSWER =
-  "1つのモデルを層ごとに分けて、複数のPCが順番に計算を受け持つしくみです。" +
-  "参加するPCが増えるほど、1台では載りきらない大きなモデルが動かせます。";
-
 const PEER_STATUS_LABEL: Record<string, string> = {
   connecting: "接続中",
   ready: "準備完了",
   error: "エラー",
 };
 
+/** Runtimeから来る失敗を画面の文言に落とす */
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function RequesterView() {
   const { state, dispatch, send, lastMessage, assignments, debug } = useCluster({ enabled: true });
-  const [modelProgress, setModelProgress] = useState(0);
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [streaming, setStreaming] = useState("");
   const [generating, setGenerating] = useState(false);
   const [computingIndex, setComputingIndex] = useState<number | null>(null);
   const [input, setInput] = useState("分散推論のしくみを一言で教えて");
-  const timer = useRef<number | null>(null);
-  const streamingRef = useRef("");
   const toastTimer = useRef<number | null>(null);
+
+  // 生成の窓。**Runtimeの `onText` には起動時のstdoutも流れてくる**ので、
+  // generateを呼んだ前後で区切って、そのあいだに来たぶんだけを回答として扱う。
+  // stateではなくrefなのは、onTextが再描画と無関係に高頻度で呼ばれるのと、
+  // stateだとクロージャが古い値を掴むため
+  const generationActiveRef = useRef(false);
+  const generationTextRef = useRef("");
   const previousRosterSize = useRef(state.roster.length);
   const [toast, setToast] = useState<string | null>(null);
   const [myId] = useState(() => getClientId("requester"));
 
   const { phase } = state;
 
-  const receiveGenerationEvent = (event: GenerationEvent) => {
-    if (event.type === "token") {
-      streamingRef.current += event.token;
-      setStreaming(streamingRef.current);
-      setGenerating(true);
-      return;
-    }
-
-    setGenerating(false);
-    setComputingIndex(null);
-    if (streamingRef.current) {
-      setChat((c) => [...c, { role: "assistant", text: streamingRef.current }]);
-    }
-    streamingRef.current = "";
-    setStreaming("");
-  };
-
   // 各peerとのDataChannelの上でRPCを話す側(RPCクライアント役)。
-  // ①のWASMが起動したら `Module.PeerManager = rpc.manager` で載せる
+  // ①のWASMが起動すると `Module.PeerManager = rpc.manager` が差し込まれる。
+  // `onGenerationEvent`(UI用のスタブ)は繋がない。実生成の唯一の経路は
+  // Runtime adapterの `onText` で、スタブが混ざると判定にならない
   const rpc = usePeerManager({
     onError: (message) => dispatch({ type: "failed", message }),
-    onGenerationEvent: receiveGenerationEvent,
   });
 
   // generation_start の顔ぶれ全員へofferを出す。フェーズの判断はしない
@@ -88,19 +77,32 @@ export function RequesterView() {
   const distribution =
     rtc.expectedIds.length === 0 ? 0 : rtc.openIds.length / rtc.expectedIds.length;
 
-  const modelReady = modelProgress >= 1;
-  const canSubmit = phase === "active" && modelReady && !generating;
+  // その世代で繋ぐべき相手が全員openしたか。開ききる前にRuntimeを立てると、
+  // まだ繋がっていない相手をRPC deviceとして登録してしまう
+  const allOpen = rtc.expectedIds.length > 0 && rtc.openIds.length === rtc.expectedIds.length;
 
-  // トラックA: モデルのダウンロード。フェーズとは独立に、開いた瞬間から進む
-  useEffect(() => {
-    let v = 0;
-    const id = window.setInterval(() => {
-      v = Math.min(1, v + 0.02);
-      setModelProgress(v);
-      if (v >= 1) clearInterval(id);
-    }, 80);
-    return () => clearInterval(id);
-  }, []);
+  // requester役のRuntime。**世代ごとに作り直す**(RPC deviceは起動時の引数で固定される)
+  const requester = useRequesterRuntime({
+    manager: rpc.manager,
+    generation: rtc.generation,
+    allOpen,
+    peerIds: rtc.expectedIds,
+    model: { kind: "url", url: `/models/${MODEL_NAME}` },
+    onText: (delta) => {
+      if (!generationActiveRef.current) return; // 起動時のstdoutは回答ではない
+      generationTextRef.current += delta;
+      setStreaming(generationTextRef.current);
+    },
+    // Runtimeのstderr。`load_tensors: layer N assigned to device RPC0` など、
+    // 層がどのデバイスに載ったかはここにしか出ない
+    onLog: (line) => console.info(`[runtime] ${line}`),
+    onError: (error) => dispatch({ type: "failed", message: describeError(error) }),
+  });
+
+  // 送信できるのは**Runtimeのreadyが解決してから**。作り物の進捗では判断しない
+  const modelReady = requester.ready;
+  const modelProgress = modelReady ? 1 : 0;
+  const canSubmit = phase === "active" && modelReady && !generating;
 
   // トラックB: 編成。接続できたら名乗り、すぐ準備完了とする(発表者に起動待ちはない)
   useEffect(() => {
@@ -150,7 +152,6 @@ export function RequesterView() {
 
   useEffect(
     () => () => {
-      if (timer.current) clearInterval(timer.current);
       if (toastTimer.current) clearTimeout(toastTimer.current);
     },
     [],
@@ -158,22 +159,32 @@ export function RequesterView() {
 
   const run = () => {
     if (!canSubmit || !input.trim()) return;
-    setChat((c) => [...c, { role: "user", text: input }]);
+    const prompt = input;
+    setChat((c) => [...c, { role: "user", text: prompt }]);
     setInput("");
-    streamingRef.current = "";
+
+    // 窓を開ける。ここから `generate()` が解決するまでに来たぶんが回答
+    generationTextRef.current = "";
+    generationActiveRef.current = true;
     setStreaming("");
     setGenerating(true);
-    let i = 0;
-    timer.current = window.setInterval(() => {
-      i += 1;
-      receiveGenerationEvent({ type: "token", token: DUMMY_ANSWER[i - 1] ?? "" });
-      // 1トークンぶんの計算が全ピアを一周する見え方にする
-      setComputingIndex(Math.floor(i / 12) % Math.max(1, assignments.length));
-      if (i >= DUMMY_ANSWER.length) {
-        if (timer.current) clearInterval(timer.current);
-        receiveGenerationEvent({ type: "generation_end" });
-      }
-    }, 45);
+
+    void requester
+      .generate(prompt)
+      .then(() => {
+        const answer = generationTextRef.current;
+        if (answer) setChat((c) => [...c, { role: "assistant", text: answer }]);
+      })
+      .catch((error: unknown) => {
+        dispatch({ type: "failed", message: describeError(error) });
+      })
+      .finally(() => {
+        generationActiveRef.current = false;
+        generationTextRef.current = "";
+        setStreaming("");
+        setGenerating(false);
+        setComputingIndex(null);
+      });
   };
 
   const computingClientId =

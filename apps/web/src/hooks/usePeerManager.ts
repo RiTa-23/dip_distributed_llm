@@ -11,11 +11,6 @@ import { installRpcConsole } from "../webrtc/rpcConsole";
  * (DataChannel上のRPC)を混ぜないため(AGENTS.md 前提2)。
  */
 export type PeerManagerOptions = {
-  /**
-   * WASM側の `Module.release_conn`。`register_buf` で受け取った番地を解放する。
-   * ①のビルドが来るまでは省略してよい(解放すべきバッファがそもそも作られない)。
-   */
-  releaseBuf?: (ptr: number) => void;
   /** 異常の通知。画面に出す用で、制御には使わない */
   onError?: (message: string) => void;
   /** WASMの生成結果を画面へ渡す。tokenは1回につき1トークン以上を受け取る */
@@ -57,19 +52,20 @@ export type PeerManagerBridge = {
  * 描画のたびに関数が作り直されない・依存配列が要らない形になる。
  */
 function createBridge(): PeerManagerBridge {
-  // ①のWASMは後から来る。releaseBuf が途中で埋まっても PeerManager を
+  // ①のWASMは後から来る。コールバックが途中で埋まっても PeerManager を
   // 作り直さずに済むよう、呼ぶ先はこの箱を1段はさんで解決する
   const latest: PeerManagerOptions = {};
 
+  // `releaseBuf` は渡さない。受信バッファの所有権はWASMのglue側にあり、
+  // 実際に解放する関数をここへ配線すると glue の `close_peer()` と二重解放になる
+  // (Runtimeのhandoff契約)。adapterの `releaseConn()` も no-op のまま
   const manager = createPeerManager({
-    releaseBuf: (ptr) => latest.releaseBuf?.(ptr),
     onError: (message) => latest.onError?.(message),
   });
 
   return {
     manager,
     setOptions: (options) => {
-      latest.releaseBuf = options.releaseBuf;
       latest.onError = options.onError;
       latest.onGenerationEvent = options.onGenerationEvent;
     },

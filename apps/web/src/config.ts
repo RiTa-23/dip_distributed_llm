@@ -6,7 +6,7 @@ export const WS_PATH = "/ws";
 /** モデルの層数。本来は①のWASMから取れるはずの値で、今は仮置き */
 export const TOTAL_LAYERS = 32;
 
-export const MODEL_NAME = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
+export const MODEL_NAME = "qwen2.5-0.5b-instruct-q4_k_m.gguf";
 
 /** 表示名の初期値。参加者が書き換える */
 export const DEFAULT_DISPLAY_NAME = "参加者のPC";
@@ -70,11 +70,17 @@ export const USE_MOCK_SOCKET: boolean = import.meta.env.VITE_MOCK_SOCKET === "1"
 export const FAKE_METRICS: boolean = import.meta.env.VITE_FAKE_METRICS === "1";
 
 /**
- * ①のWASM(llmletのビルド)を読み込む先。Honoは `./public/wasm` をここへ配信する
- * (`apps/server/src/index.ts`)。**まだビルドが置かれていないので今は404**で、
- * そのときは起動処理がダミー経路へ落ちる(`webrtc/wasmEngine.ts`)。
+ * ①のRuntime adapterを読み込む先。Honoは `./public/wasm` をここへ配信する
+ * (`apps/server/src/index.ts`)。
+ *
+ * 指すのは **`llmlet-runtime.js`**(名前付きexport `startPeer` / `startRequester`)で、
+ * `llmlet-mod.js` ではない。あちらはEmscriptenのfactoryで、起動関数は生えていない。
+ * `llmlet-runtime.js` が自分の隣から `llmlet-mod.js` / `.wasm` を解決する。
+ *
+ * **読めなければダミーへは落ちない**(`webrtc/wasmEngine.ts`)。モデルもRPCも
+ * 通っていないのに画面だけ準備完了になるのを避けるため。
  *
  * 読み込むのは静的配信されたグルーコードだけで、RPCの実データはHonoを通さず
  * DataChannelを流れる(AGENTS.md 前提2)。
  */
-export const WASM_MODULE_URL = "/wasm/llmlet-mod.js";
+export const WASM_MODULE_URL = "/wasm/llmlet-runtime.js";

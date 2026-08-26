@@ -12,7 +12,6 @@ import { usePeerManager } from "../hooks/usePeerManager";
 import { usePeerStats } from "../hooks/usePeerStats";
 import { useStalled } from "../hooks/useStalled";
 import { useWasmEngine } from "../hooks/useWasmEngine";
-import type { ReleaseBuf } from "../webrtc/wasmEngine";
 import { getClientId } from "../lib/clientId";
 import { describeMemory, describeWebgpu } from "../lib/environment";
 import { useEnvironment } from "../hooks/useEnvironment";
@@ -92,6 +91,11 @@ function reorganizingText(reason: AbortReason | null) {
   return REORGANIZING_TEXT[reason] ?? REORGANIZING_FALLBACK;
 }
 
+/** Runtimeから来る失敗を画面の文言に落とす */
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /**
  * 参加者(peer)画面。参加 → エンジン起動 → 発表者との直接接続 → 貢献中、という
  * 1本の流れを出す。フェーズを決めるのは clusterReducer で、ここは表示と、
@@ -115,15 +119,10 @@ export function PeerView() {
   // 止まる。時間で気づけるようにして、繋ぎ直しの導線を出す(#63)
   const reorganizingStalled = useStalled(phase === "reorganizing", REORGANIZING_STALL_MS);
 
-  // ①のWASMが載ると `Module.release_conn` が入る。載るまでは undefined のまま
-  // (解放すべきバッファがそもそも作られない)。stateに持つ理由は
-  // `hooks/useWasmEngine.ts` の `onReleaseBuf` のコメントを参照
-  const [releaseBuf, setReleaseBuf] = useState<ReleaseBuf | undefined>(undefined);
-
   // 発表者とのDataChannelの上でRPCを話す側。①のWASMが起動すると
-  // `Module.PeerManager = rpc.manager` が差し込まれる(`useWasmEngine`)
+  // `Module.PeerManager = rpc.manager` が差し込まれる(`useWasmEngine`)。
+  // `releaseBuf` は渡さない(受信バッファの所有権はWASMのglue側。handoff契約)
   const rpc = usePeerManager({
-    releaseBuf,
     onError: (message) => dispatch({ type: "failed", message }),
   });
 
@@ -159,20 +158,44 @@ export function PeerView() {
     });
   }, [phase, send, displayName, myId]);
 
-  // ①のWASMを読み込んでrpc-server役を起動する。ビルドがまだ無く
-  // `/wasm/llmlet-mod.js` が404の今は、従来どおり一定時間待ってから準備完了になる
-  // (読み込めたかどうかはコンソールの `[wasm]` 行で分かる)
-  useWasmEngine({
-    role: "peer",
+  // ①のWASMを読み込んでrpc-server役を起動する。
+  //
+  // **寿命は join → leave/unmount**。フェーズでは止めない。世代交代のたびに落とすと
+  // 次の世代のためにRPCサーバを立て直すことになり、そのぶん再編成が長引く。
+  // 世代の切り替えはPeerManager側の張り替えで吸収する。
+  //
+  // 読めない・起動できないはダミーへ落とさずに失敗させる(`webrtc/wasmEngine.ts`)。
+  const runtime = useWasmEngine({
     manager: rpc.manager,
-    nodeId: myId,
-    enabled: phase === "preparing",
-    onReleaseBuf: (fn) => setReleaseBuf(() => fn),
-    onReady: () => {
-      dispatch({ type: "local_ready" });
-      send({ type: "peer_status", status: "ready" });
-    },
+    enabled: joined,
+    // Runtimeのstdout/stderr。画面には出さないが、層の割り当てやRPCの様子は
+    // ここにしか出ないので、コンソールでは追えるようにしておく
+    onLog: (line) => console.info(`[runtime] ${line}`),
+    onError: (error) => dispatch({ type: "failed", message: describeError(error) }),
   });
+
+  // 自分がロスターに載ったか。`socket_closed` でロスターは空になるので、
+  // この false → true が「制御プレーンに繋がり直して名乗り終えた」1回に対応する
+  const selfRegistered = state.roster.some((peer) => peer.clientId === myId);
+
+  // 準備完了の通知。**Runtimeのreadyと、制御プレーンへの登録の両方**が要る。
+  // `runtime.ready` の直後に送ると、helloより先に出てしまうことがある
+  // (`useHonoSocket.send` はソケットが無い状態では捨てる)。
+  //
+  // ⚠️ 接続ごとのguardが要る。サーバは `peer_status` を受けるたびに `roster_update` を
+  // broadcastするので、guardが無いと peer_status → roster_update → 再送 のループになる。
+  const readySentRef = useRef(false);
+  useEffect(() => {
+    if (!selfRegistered) {
+      // 切れた。次に名乗り直したらもう一度送る
+      readySentRef.current = false;
+      return;
+    }
+    if (!runtime.ready || readySentRef.current) return;
+    readySentRef.current = true;
+    dispatch({ type: "local_ready" });
+    send({ type: "peer_status", status: "ready" });
+  }, [selfRegistered, runtime.ready, dispatch, send]);
 
   // 発表者とのDataChannelが開いたら受信中を抜ける。世代の古い接続がここへ来ることは
   // ない(useWebrtcSignaling が open になる前に閉じている)

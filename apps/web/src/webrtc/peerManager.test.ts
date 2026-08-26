@@ -469,9 +469,12 @@ describe("受信キューの上限", () => {
 });
 
 describe("register_buf", () => {
-  test("登録した番地は接続を畳むときに解放される", () => {
-    const released: number[] = [];
-    const requester = createPeerManager({ releaseBuf: (ptr) => released.push(ptr) });
+  // 受信バッファの所有権はWASMのglue側にある。glueはRPCを回しているpthreadで
+  // 確保し、そのthreadの `Module._connbuf[fd]` にキャッシュして、同じthreadの
+  // `close_peer()` で解放する。ここから解放する関数を配線すると二重解放になるので、
+  // PeerManagerは番地を預かるだけで、解放には一切関与しない(Runtimeのhandoff契約)。
+  test("番地は預かるだけで、PeerManagerは解放しない", () => {
+    const requester = createPeerManager();
     const peer = createPeerManager();
     const toPeer = createWire((data) => peer.handleMessage(REQUESTER_ID, data));
     const toRequester = createWire((data) => requester.handleMessage(PEER_ID, data));
@@ -485,8 +488,17 @@ describe("register_buf", () => {
     });
 
     requester.register_buf(clientFd, 0x1234);
-    requester.close_connection(clientFd);
-    expect(released).toEqual([0x1234]);
+    // 畳んでも例外にならず、fdは解放される。解放コールバックという口自体が無い
+    expect(requester.close_connection(clientFd)).toBe(0);
+    expect(requester.openFds()).not.toContain(clientFd);
+  });
+
+  test("PeerManagerOptions に解放コールバックの口が無い", () => {
+    // 「後で実物を挿せばいい」という形で口を残すと、挿した瞬間に二重解放になる。
+    // 口が無いことをテストで固定しておく
+    const options: Record<string, unknown> = { onError: () => {} };
+    expect(Object.keys(options)).not.toContain("releaseBuf");
+    expect(() => createPeerManager(options)).not.toThrow();
   });
 });
 

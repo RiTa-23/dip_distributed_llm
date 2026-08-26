@@ -5,6 +5,7 @@ import { networkInterfaces } from "node:os";
 import { Coordinator, type Socket } from "./coordinator";
 import { parseClientMessage } from "./parse";
 import { buildJoinUrls } from "./lanAddress";
+import { bunModelLookup, handleModelRequest } from "./modelFile";
 
 const app = new Hono();
 const { upgradeWebSocket, websocket } = createBunWebSocket();
@@ -22,11 +23,22 @@ const port = Number(process.env.PORT ?? (hasTls ? 8443 : 3000));
 // すべてのレスポンスに COOP/COEP を付与する(#13)。
 // WASM版llama.cppがpthread(SharedArrayBuffer)を使うため cross-origin isolation が必須。
 // secure context(HTTPS)と合わせて初めて crossOriginIsolated === true になる。
+// ⚠️ ヘッダは `next()` の**前**に宣言する。`await next()` のあとに `c.header()` すると
+// Honoが確定済みResponseを組み直すため、`BunFile.slice()` のbodyが範囲を失って
+// ファイル全体になり、Content-Length も落ちる(#B-1で実測)。
+// 先に宣言しておけばHonoが作るResponse(serveStatic・404含む)にはそのまま載る。
+// ハンドラが生のResponseを返す経路(モデル配信)だけは、その場で自分で載せる。
 app.use("*", async (c, next) => {
-  await next();
   c.header("Cross-Origin-Opener-Policy", "same-origin");
   c.header("Cross-Origin-Embedder-Policy", "require-corp");
+  await next();
 });
+
+/** 生のResponseを返す経路が自分で載せるぶん。上のミドルウェアと同じ値 */
+const ISOLATION_HEADERS = {
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Cross-Origin-Embedder-Policy": "require-corp",
+} as const;
 
 // --- 制御プレーン(#16-19) ---
 // /ws は静的配信・SPAフォールバックより前に登録する(index.html に飲まれないため)。
@@ -101,6 +113,18 @@ app.get("/join-info", (c) =>
 // マウント順が重要: models / wasm を先に処理し、最後に web-dist(SPA)へフォールバックする。
 // モデル(GGUF)・WASMグルーコードは ./public から配信。
 // 実データ(テンソル)は WebRTC P2P で流れるため Hono は中継しない(AGENTS.md 前提2)。
+// GGUFだけは serveStatic より前に自前で返す(#B-1)。serveStatic は
+// `content-length: 0` を返し Range も 206 にしないため、Runtime adapter が
+// HEAD でモデルサイズを決められず、URL経路のモデル読み込みがそもそも成立しない。
+// ここが受け持つのは `/models/<name>` の1階層だけで、汎用の静的配信ではない。
+const modelLookup = bunModelLookup("./public/models");
+// middlewareではなくrouteとして登録する。`app.use` で返すと後段の serveStatic まで
+// 走ってしまい、こちらのヘッダのまま body だけ全body に差し替わる(実測)。
+app.on(["GET", "HEAD"], "/models/*", async (c, next) => {
+  const handled = await handleModelRequest(c.req.raw, modelLookup, ISOLATION_HEADERS);
+  if (!handled) return next(); // 担当外・見つからない → 下の 404 へ
+  return handled;
+});
 app.use("/models/*", serveStatic({ root: "./public" }));
 app.use("/wasm/*", serveStatic({ root: "./public" }));
 // 見つからなければ 404。下の SPA フォールバックに落として index.html を返さないため。
