@@ -118,6 +118,14 @@ function pattern(size: number): Uint8Array {
   return data;
 }
 
+/** 相手から届いたことにするフレームを組む。相手側のPeerManagerを立てずに1本だけ流したいとき用 */
+function frameOf(cmd: number, body?: Uint8Array): ArrayBuffer {
+  const frame = new Uint8Array(1 + (body?.byteLength ?? 0));
+  frame[0] = cmd;
+  if (body) frame.set(body, 1);
+  return frame.buffer;
+}
+
 describe("接続の確立", () => {
   test("acceptが先でもconnectが先でも、両側にfdが渡る", () => {
     for (const acceptFirst of [true, false]) {
@@ -668,5 +676,144 @@ describe("remoteIds", () => {
     // 相手のタブが閉じた等。detachが来る前でも、宛先として選ばせない
     channel.readyState = "closed";
     expect(pm.remoteIds()).toEqual([]);
+  });
+});
+
+describe("計測(stats)", () => {
+  test("本文のバイト数だけを数える。フレームヘッダと制御フレームは含めない", () => {
+    const pair = createPair();
+    const { clientFd, serverFd } = handshake(pair, false);
+
+    // 数えるのはここで渡した2000バイトだけ。実際に回線を流れるのは
+    // CONNECT・ACCEPTEDの各1バイトと、フレームごとの1バイトのヘッダが余分に乗る
+    pair.requester.send(clientFd, pattern(2000));
+    recvNow(pair.peer, serverFd, 2000);
+
+    expect(pair.requester.stats.snapshot().bytesSent).toBe(2000);
+    expect(pair.requester.stats.snapshot().bytesReceived).toBe(0);
+    expect(pair.peer.stats.snapshot().bytesReceived).toBe(2000);
+  });
+
+  test("64KiBに分割された送信も、C側の呼び出し1回として数える", () => {
+    const pair = createPair();
+    const { clientFd, serverFd } = handshake(pair, false);
+    const size = 200 * 1024;
+
+    pair.requester.send(clientFd, pattern(size));
+    recvNow(pair.peer, serverFd, size);
+
+    // 4フレームに分かれるが、送信側の往復は1回ぶん
+    expect(pair.toPeer.length).toBeGreaterThan(4);
+    expect(pair.requester.stats.snapshot().bytesSent).toBe(size);
+    expect(pair.peer.stats.snapshot().bytesReceived).toBe(size);
+  });
+
+  test("受け取って返すたびに処理回数が増える", () => {
+    const pair = createPair();
+    const { clientFd, serverFd } = handshake(pair, false);
+
+    for (let i = 0; i < 3; i++) {
+      // 要求(発表者→参加者)
+      pair.requester.send(clientFd, pattern(64));
+      recvNow(pair.peer, serverFd, 64);
+      // 応答(参加者→発表者)
+      pair.peer.send(serverFd, pattern(16));
+      recvNow(pair.requester, clientFd, 16);
+    }
+
+    // 参加者から見れば「3回処理した」
+    expect(pair.peer.stats.snapshot().turns).toBe(3);
+  });
+
+  test("接続の手続きだけでは処理回数が増えない", () => {
+    const pair = createPair();
+    handshake(pair, false);
+    expect(pair.peer.stats.snapshot().turns).toBe(0);
+    expect(pair.peer.stats.snapshot().lastActivityAt).toBe(null);
+  });
+
+  test("相手ごとの内訳が出る", () => {
+    const requester = createPeerManager();
+    const peerA = createPeerManager();
+    const peerB = createPeerManager();
+
+    // 星型なので、発表者は2本の回線を持ち、参加者はそれぞれ1本ずつ持つ
+    const toPeerA = createWire((data) => peerA.handleMessage(REQUESTER_ID, data));
+    const toPeerB = createWire((data) => peerB.handleMessage(REQUESTER_ID, data));
+    requester.attach("peer-a", toPeerA.channel);
+    requester.attach("peer-b", toPeerB.channel);
+    peerA.attach(
+      REQUESTER_ID,
+      createWire((data) => requester.handleMessage("peer-a", data)).channel,
+    );
+    peerB.attach(
+      REQUESTER_ID,
+      createWire((data) => requester.handleMessage("peer-b", data)).channel,
+    );
+
+    let fdA = -1;
+    let fdB = -1;
+    peerA.accept(() => {});
+    peerB.accept(() => {});
+    requester.connect("peer-a", (fd) => {
+      fdA = fd;
+    });
+    requester.connect("peer-b", (fd) => {
+      fdB = fd;
+    });
+
+    requester.send(fdA, pattern(100));
+    requester.send(fdB, pattern(300));
+
+    expect(requester.stats.snapshotOf("peer-a").bytesSent).toBe(100);
+    expect(requester.stats.snapshotOf("peer-b").bytesSent).toBe(300);
+    expect(requester.stats.snapshot().bytesSent).toBe(400);
+  });
+
+  test("水位で積んだだけのぶんは、書き出せるまで数えない", () => {
+    const pair = createCongestedPair();
+    const { clientFd } = handshakeCongested(pair);
+    const before = pair.requester.stats.snapshot().bytesSent;
+
+    pair.toPeer.stall();
+    // C側は受け取ってもらえた扱いになるが、まだ回線を渡っていない
+    const accepted = pair.requester.send(clientFd, pattern(200 * 1024));
+    expect(accepted).toBeGreaterThan(0);
+    expect(pair.requester.stats.snapshot().bytesSent).toBe(before);
+
+    pair.toPeer.drain();
+    expect(pair.requester.stats.snapshot().bytesSent).toBe(before + accepted);
+  });
+
+  test("積んだまま捨てられたぶんは数えない", () => {
+    const pair = createCongestedPair();
+    const { clientFd } = handshakeCongested(pair);
+
+    pair.toPeer.stall();
+    pair.requester.send(clientFd, pattern(200 * 1024));
+    // 相手が落ちた。積んであるものは出せないので捨てられる
+    pair.requester.detach(PEER_ID);
+    pair.toPeer.drain();
+
+    expect(pair.requester.stats.snapshot().bytesSent).toBe(0);
+  });
+
+  test("受信の上限を超えて捨てたぶんも、受け取った量には含める", () => {
+    const peer = createPeerManager({ maxRecvQueueBytes: 4 * 1024 });
+    const wire = createWire(() => {});
+    peer.attach(REQUESTER_ID, wire.channel);
+
+    let serverFd = -1;
+    peer.accept((fd) => {
+      serverFd = fd;
+    });
+    peer.handleMessage(REQUESTER_ID, frameOf(0x01));
+    expect(serverFd).toBeGreaterThanOrEqual(0);
+
+    // 上限を超える本文を1つ流す。論理接続は畳まれるが、回線は渡り切っている
+    peer.handleMessage(REQUESTER_ID, frameOf(0x03, pattern(8 * 1024)));
+
+    expect(peer.openFds()).toEqual([]);
+    expect(peer.stats.snapshot().bytesReceived).toBe(8 * 1024);
   });
 });
