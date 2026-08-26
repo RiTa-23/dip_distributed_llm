@@ -2,9 +2,9 @@
   "name": "@dip_distributed_llm/server",
   "scripts": {
     "dev": "bun run --hot src/index.ts",
-    "cert": "bash scripts/gen-cert.sh",
-    "dummy-model": "bash scripts/gen-dummy-model.sh",
-    "web:copy": "bun run --cwd ../web build && rm -rf public/web-dist && cp -r ../web/dist public/web-dist && touch public/web-dist/.gitkeep",
+    "cert": "bun scripts/gen-cert.ts",
+    "dummy-model": "bun scripts/gen-dummy-model.ts",
+    "web:copy": "bun run --cwd ../web build && bun scripts/copy-web-dist.ts",
     "setup": "bun run cert && bun run dummy-model && bun run web:copy",
     "lint": "oxlint",
     "format": "oxfmt --check src",
