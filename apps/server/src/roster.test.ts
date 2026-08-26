@@ -245,12 +245,41 @@ describe("webrtc_signal 中継", () => {
   test("既知の targetId には unicast Effect を返す", () => {
     const s = createState();
     applyHello(s, "p1", "peer", "P1");
-    const eff = applySignal(s, signal);
+    const eff = applySignal(s, "req", signal);
     expect(eff).toEqual([{ kind: "unicast", targetId: "p1", msg: signal }]);
   });
 
   test("未知の targetId は破棄(例外を投げない)", () => {
     const s = createState();
-    expect(applySignal(s, signal)).toEqual([]);
+    expect(applySignal(s, "req", signal)).toEqual([]);
+  });
+
+  test("fromId が送信者と違えば中継しない(なりすまし防止 #54)", () => {
+    const s = createState();
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "req", "requester", "Req");
+    // 送信者は attacker なのに fromId は req を騙っている
+    expect(applySignal(s, "attacker", signal)).toEqual([]);
+  });
+
+  test("なりすましは宛先が存在していても中継しない", () => {
+    const s = createState();
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "attacker", "peer", "Atk");
+    expect(applySignal(s, "attacker", signal)).toEqual([]);
+  });
+
+  test("自分名義なら向きを問わず中継する(peer→requester も通る)", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    const fromPeer: WebrtcSignalMessage = {
+      type: "webrtc_signal",
+      targetId: "req",
+      fromId: "p1",
+      payload: { kind: "answer", sdp: "v=0..." },
+    };
+    expect(applySignal(s, "p1", fromPeer)).toEqual([
+      { kind: "unicast", targetId: "req", msg: fromPeer },
+    ]);
   });
 });

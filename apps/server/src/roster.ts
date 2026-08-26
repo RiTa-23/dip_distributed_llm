@@ -192,8 +192,19 @@ export function applyRequesterAccepting(
   return accepting ? maybeReformForGrowth(state) : [];
 }
 
-/** webrtc_signal: 中身を解釈せず targetId 宛に転送するだけ。宛先不明なら破棄。 */
-export function applySignal(state: ClusterState, msg: WebrtcSignalMessage): Effect[] {
+/**
+ * webrtc_signal: 中身を解釈せず targetId 宛に転送するだけ。宛先不明なら破棄。
+ *
+ * `fromId` が送信者本人かを検証する(#54)。ここを見ないと、任意のクライアントが
+ * 他人を騙ったSDP/ICEを送れてしまい、受け取った側の接続を壊せる。
+ * 飛び入り参加を想定する以上、悪意がなくてもフロントの不具合1つで起きうる。
+ */
+export function applySignal(
+  state: ClusterState,
+  senderId: string,
+  msg: WebrtcSignalMessage,
+): Effect[] {
+  if (msg.fromId !== senderId) return []; // なりすまし
   if (!state.clients.has(msg.targetId)) return [];
   return [{ kind: "unicast", targetId: msg.targetId, msg }];
 }

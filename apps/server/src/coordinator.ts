@@ -11,6 +11,11 @@ import * as roster from "./roster";
 
 export interface Socket {
   send(data: string): void;
+  /**
+   * WebSocketのpingフレームを送る(#55)。ブラウザは自動でpongを返すため、
+   * 生きている接続はこれで idleTimeout が延びる。実装できない環境では省略してよい。
+   */
+  ping?(): void;
 }
 
 export class Coordinator {
@@ -45,8 +50,17 @@ export class Coordinator {
     this.run(roster.applyRequesterAccepting(this.state, clientId, accepting));
   }
 
-  signal(msg: WebrtcSignalMessage): void {
-    this.run(roster.applySignal(this.state, msg));
+  signal(clientId: string, msg: WebrtcSignalMessage): void {
+    this.run(roster.applySignal(this.state, clientId, msg));
+  }
+
+  /**
+   * 全接続にpingを送る(#55)。応答が返らない接続はBunの idleTimeout で閉じられ、
+   * onClose 経由で disconnect まで繋がる。蓋を閉じたPCのように、FINが飛ばないまま
+   * 消えたpeerをロスターから外すための唯一の手立て。
+   */
+  pingAll(): void {
+    for (const s of this.sockets.values()) s.ping?.();
   }
 
   disconnect(clientId: string, socket: Socket): void {
