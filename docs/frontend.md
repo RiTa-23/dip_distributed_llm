@@ -102,6 +102,7 @@ apps/web/src/
 │   ├── usePeerManager.ts      開いたDataChannelとllama.cppのRPCを繋ぐ
 │   │                          (useWebrtcSignaling へ広げて渡す形で返す)
 │   ├── usePeerStats.ts        計測値を250msごとに読んで画面へ渡す
+│   ├── useWasmEngine.ts       ①のWASMの起動をいつ始めるかだけを持つ
 │   └── useHonoSocket.mock.ts  Honoの代わり。本物と同じ形を返す
 ├── lib/
 │   ├── clientId.ts            localStorageに保存するclientId(役割ごとに別キー)
@@ -115,6 +116,8 @@ apps/web/src/
 │   ├── requesterSession.ts    発表者側。全参加者へofferを出す
 │   ├── peerManager.ts         開いたDataChannelにllama.cppのRPCを載せる
 │   │                          (WASM側が呼ぶ Module.PeerManager の実装)
+│   ├── wasmEngine.ts          ①のWASMを読み込んで上のPeerManagerを差し込む
+│   │                          (読めなければダミー経路へ落ちる)
 │   └── peerStats.ts           流れたバイト数とRPCの往復の数え上げ(計測の実体)
 ├── components/                両画面で使う部品。1部品1フォルダ相当
 │   ├── TopBar / StatusBlock / LayerBar / ProgressBar / Metric / DevPanel
@@ -273,11 +276,35 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 
 コンソールにエラーは出ていません。ICEの詳細は `chrome://webrtc-internals` で見られます。
 
+### ①のWASMを起動する(#71)
+
+参加者画面のエンジン起動は、2.2秒の `setTimeout` から本物の読み込みに替わりました([`webrtc/wasmEngine.ts`](../apps/web/src/webrtc/wasmEngine.ts))。やっているのは4つです。
+
+1. `/wasm/llmlet-mod.js` を動的importして初期化する(配信は Hono の `public/wasm`)
+2. `Module.PeerManager = rpc.manager` を差し込む
+3. `Module.release_conn` があれば `usePeerManager({ releaseBuf })` へ渡す
+4. rpc-server役(`startServer` 相当)を呼ぶ。返ったら `local_ready` と `peer_status: ready`
+
+**①のビルドはまだ無いので、既定では1で失敗してダミー経路(2.2秒待って準備完了)へ落ちます。** 落ちなければビルドが届くまで参加者画面が一切進まなくなるため、これが通常の経路です。どちらを通ったかはコンソールの `[wasm]` 行で区別できます(成功は `info`、フォールバックは `warn`)。
+
+画面から呼ぶ入口は [`hooks/useWasmEngine.ts`](../apps/web/src/hooks/useWasmEngine.ts) で、`role` を替えれば発表者側(rpc-client役)からも同じものを使えます。`PeerView` に残っているのは呼び出しの5行だけです。
+
+決めごとが3つあります。
+
+| | なぜ |
+|---|---|
+| `nodeId` は自分の `clientId` をそのまま渡す | llama.cppの `rpc_servers` の文字列がそのまま `connect(nodeId, done)` に来るため([`lib/clientId.ts`](../apps/web/src/lib/clientId.ts)) |
+| 起動関数の名前は候補から探す | ①のビルドがまだ無く、実際の名前を確認できない。`ENTRY_NAMES` に1行足せば済む形にしてある |
+| 起動関数が返らなくても先へ進む | rpc-server役は待ち受けたまま戻らない作りがありうる。待ち続けると準備中で止まる |
+| 1つのPeerManagerにエンジンは1つ | 参加 → 離脱 → 再参加で起動処理は何度でも呼ばれる。起動中の再参加は走っているものに相乗りし、載ったあとは覚えたものを返す(`createEngineStarter`)。素通しすると同じ回線の上にrpc-serverが2つ立つ |
+
+`releaseBuf` を `setOptions` で直接入れずに `PeerView` のstateに持たせているのは、`usePeerManager` が描画のたびに渡されたオプションで上書きするからです。外から入れた値は次の描画で消えます。
+
 ### まだ無いもの
 
 - **TURNは持ちません。** 会場のAPアイソレーションが有効だとP2Pが成立しません(`docs/webrtc-implementation.md`)。ローカル検証では踏みません
 - **WebRTCの失敗で `peer_status: "error"` は送っていません。** 送るとサーバの「全員ready」が崩れて次の世代が始まらず、1人の失敗で全体が止まるためです。今は画面だけ `error` にしています
-- **WASM本体がありません。** `peerManager.ts` は両画面に繋ぎ込み済みで、DataChannelが開けば `attach` まで走ります。ただし `Module.PeerManager` に差し込む相手(`llmlet-mod.js` / `.wasm`)が①からまだ来ていません
+- **WASM本体がありません。** `peerManager.ts` は両画面に繋ぎ込み済みで、DataChannelが開けば `attach` まで走ります。差し込む起動処理も入りました(上の「①のWASMを起動する」)が、差し込む相手(`llmlet-mod.js` / `.wasm`)が①からまだ来ていないため、既定ではダミー経路を通ります
   - **RPCのバイト列そのものは、WASMの代役スタブで流して確認済みです**(2026/8/25、#44)。実物のDataChannelで16MiBの往復がバイト一致で通っています。開発中は参加者のタブで `__rpc.serve()`、発表者のタブで `await __rpc.check()` で試せます(`docs/webrtc-implementation.md` の「WASMの代役スタブで確認したこと」)
 
 ## 計測(処理回数・受信データ・応答時間)
@@ -346,7 +373,7 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 | `lib/assignments.ts` | 均等割り | ①の `getLayerAssignment()` |
 | ~~`PeerView` のWebRTC接続~~ | — | 本物になりました(2026/8/25)。`useWebrtcSignaling` の `status` が `open` になったら受信中を抜けます |
 | ~~`RequesterView` の配布率~~ | — | 本物になりました(2026/8/25)。開いたDataChannelの数 ÷ 繋ぐべき人数です |
-| `PeerView` のエンジン起動 | 2.2秒の `setTimeout` | ①の `startWasmPeerServer()` |
+| `PeerView` のエンジン起動 | ①のビルドが無いあいだだけ2.2秒待つ([`webrtc/wasmEngine.ts`](../apps/web/src/webrtc/wasmEngine.ts)) | 同じファイル。`llmlet-mod.js` が置かれれば自動でそちらを通る(#71) |
 | ~~`PeerView` の処理回数・受信量~~ | — | 実測になりました(#47)。数えているのは [`webrtc/peerStats.ts`](../apps/web/src/webrtc/peerStats.ts)。①のWASMが載るまでは動かないので画面には `—` が出ます。乱数へ戻すときは `VITE_FAKE_METRICS=1` |
 | `RequesterView` のモデルDL | 一定速度のタイマー | `fetch` + `ReadableStream` の実測 |
 | `RequesterView` の生成 | 固定文を1文字ずつ | ①の `onToken()` |
@@ -356,6 +383,6 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 
 1. ~~**WebRTCのシグナリング(`webrtc_signal` の送受信)。**~~ 入りました(#37)。上の「データプレーンの繋ぎ込み(ステップ4)」を参照
 2. ~~**①へDataChannelを渡す。**~~ 担当が変わり、RPCの繋ぎ込みまでこちらで持ちます。橋渡しの本体([`webrtc/peerManager.ts`](../apps/web/src/webrtc/peerManager.ts))と、両画面への繋ぎ込み([`hooks/usePeerManager.ts`](../apps/web/src/hooks/usePeerManager.ts))が入りました
-3. **WASMが来たら `Module.PeerManager = rpc.manager` を差し込む。** ①のビルド(`llmlet-mod.js` / `.wasm`)待ちです。差し込む場所(`startClient` / `startServer` 相当の起動処理)以外は書き終わっており、そこに載るバイト列のやり取りは代役スタブで確認済みです(#44)
+3. ~~**WASMが来たら `Module.PeerManager = rpc.manager` を差し込む。**~~ 参加者側の起動処理が入りました(#71、上の「①のWASMを起動する」)。①のビルド(`llmlet-mod.js` / `.wasm`)が置かれれば自動でそちらを通ります。残っているのは発表者側(rpc-client役)の起動で、③と分担を決めてから別Issueで進めます
 4. 上の「②へ」の2番(新しい参加者が来たときの再編成)を②と詰める
 5. ~~`PeerView` の処理回数・受信量を実測に替える。~~ 入りました(#47)。計測点は `getStats()` ではなく PeerManager です(本文のバイト数を厳密に数えられ、`getStats()` では取れない処理回数も取れるため)

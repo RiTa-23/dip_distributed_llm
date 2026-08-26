@@ -165,7 +165,8 @@ function teardownAllConnections() {
 | `webrtc_signal` の送受信・DataChannel確立 | WebRTC担当 | 完了(#37) |
 | Hono側の `webrtc_signal` 素通し中継 | ② | 完了(#19) |
 | DataChannel ↔ llama.cpp RPC の橋渡し(`PeerManager`) | WebRTC担当 | 実装済み(下記) |
-| WASMのビルド(`llmlet-mod.js` / `.wasm`)とページへの読み込み | ① | 未着手 |
+| WASMのページへの読み込みと起動(`webrtc/wasmEngine.ts`) | WebRTC担当 | 実装済み(#71) |
+| WASMのビルド(`llmlet-mod.js` / `.wasm`) | ① | 未着手 |
 
 ### llmletのどこを差し替えるか
 
@@ -276,14 +277,16 @@ await __rpc.check({ sizeMiB: 8 })
 
 ### まだ無いもの
 
-WASM本体(`llmlet-mod.js` / `.wasm`)が無いため、`startClient` / `startServer` に相当する起動処理がまだ書けません。ビルドが来たら、その起動処理の中で次の2つを渡せば繋がります。
+WASM本体(`llmlet-mod.js` / `.wasm`)がまだ来ていません。**受け口の側は先に書いてあります**([`apps/web/src/webrtc/wasmEngine.ts`](../apps/web/src/webrtc/wasmEngine.ts)、#71)。やっているのは上の2つです。
 
 ```ts
 // 1. register_buf で預かった番地の解放先を渡す(usePeerManager の引数に足す)
-const rpc = usePeerManager({ releaseBuf: (ptr) => Module.release_conn(ptr), onError })
+const rpc = usePeerManager({ releaseBuf, onError })
 
 // 2. 起動処理の中でWASMへ載せる
 Module.PeerManager = rpc.manager
 ```
+
+`/wasm/llmlet-mod.js` が404の今は、読み込みに失敗した時点でダミー経路(2.2秒待って準備完了)へ落ちます。ビルドが置かれれば、それだけで本物の経路に切り替わります。**ビルドが来たときに確認するのは起動関数の名前だけ**で、`wasmEngine.ts` の `ENTRY_NAMES`(既定は `startServer` / `startClient`)と違っていたらそこへ足します。
 
 ビルド側の前提(llmletのMakefileより): emsdk 4.0.16以上、`-sMEMORY64=2`(wasm64)、emdawnwebgpu(Dawn)、`-sEXPORTED_RUNTIME_METHODS` に `release_conn` を含めること。パッチ済みllama.cppは `ktock/llama.cpp` のフォークです。

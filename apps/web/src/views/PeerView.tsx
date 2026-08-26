@@ -10,6 +10,8 @@ import { useWebrtcSignaling } from "../hooks/useWebrtcSignaling";
 import type { WebrtcStatus } from "../hooks/useWebrtcSignaling";
 import { usePeerManager } from "../hooks/usePeerManager";
 import { usePeerStats } from "../hooks/usePeerStats";
+import { useWasmEngine } from "../hooks/useWasmEngine";
+import type { ReleaseBuf } from "../webrtc/wasmEngine";
 import { getClientId } from "../lib/clientId";
 import { describeMemory, describeWebgpu } from "../lib/environment";
 import { useEnvironment } from "../hooks/useEnvironment";
@@ -93,9 +95,15 @@ export function PeerView() {
   const isActive = phase === "active";
   const reorganizing = reorganizingText(state.abortReason);
 
-  // 発表者とのDataChannelの上でRPCを話す側。①のWASMが起動したら
-  // `Module.PeerManager = rpc.manager` で載せる。releaseBuf はそのとき一緒に渡す
+  // ①のWASMが載ると `Module.release_conn` が入る。載るまでは undefined のまま
+  // (解放すべきバッファがそもそも作られない)。stateに持つ理由は
+  // `hooks/useWasmEngine.ts` の `onReleaseBuf` のコメントを参照
+  const [releaseBuf, setReleaseBuf] = useState<ReleaseBuf | undefined>(undefined);
+
+  // 発表者とのDataChannelの上でRPCを話す側。①のWASMが起動すると
+  // `Module.PeerManager = rpc.manager` が差し込まれる(`useWasmEngine`)
   const rpc = usePeerManager({
+    releaseBuf,
     onError: (message) => dispatch({ type: "failed", message }),
   });
 
@@ -129,13 +137,22 @@ export function PeerView() {
       clientId: myId,
       displayName: displayName.trim(),
     });
-    // ①のWASM起動の代わり。完了したら準備完了を知らせる
-    const t = window.setTimeout(() => {
+  }, [phase, send, displayName, myId]);
+
+  // ①のWASMを読み込んでrpc-server役を起動する。ビルドがまだ無く
+  // `/wasm/llmlet-mod.js` が404の今は、従来どおり一定時間待ってから準備完了になる
+  // (読み込めたかどうかはコンソールの `[wasm]` 行で分かる)
+  useWasmEngine({
+    role: "peer",
+    manager: rpc.manager,
+    nodeId: myId,
+    enabled: phase === "preparing",
+    onReleaseBuf: (fn) => setReleaseBuf(() => fn),
+    onReady: () => {
       dispatch({ type: "local_ready" });
       send({ type: "peer_status", status: "ready" });
-    }, 2200);
-    return () => clearTimeout(t);
-  }, [phase, send, dispatch, displayName, myId]);
+    },
+  });
 
   // 発表者とのDataChannelが開いたら受信中を抜ける。世代の古い接続がここへ来ることは
   // ない(useWebrtcSignaling が open になる前に閉じている)
