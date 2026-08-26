@@ -62,6 +62,24 @@
   text-align: center;
 }
 
+/*
+ * 失敗の原因そのもの。人向けの案内ではなく機械が吐いた文字列が入るので、
+ * .notice(活性色で目を引かせる箱)とは分け、読み取り用の見た目にする。
+ * 長い英語が改行なしで来るため折り返しを許す
+ */
+.errorDetail {
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--c-text-dim);
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 600px) {
   .body {
     gap: 22px;

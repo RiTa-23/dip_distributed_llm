@@ -15,7 +15,7 @@ import { describeMemory, describeWebgpu } from "../lib/environment";
 import { useEnvironment } from "../hooks/useEnvironment";
 import { formatBytes, formatCount, formatDuration, NO_VALUE } from "../lib/format";
 import { DEFAULT_DISPLAY_NAME, TOTAL_LAYERS } from "../config";
-import type { Phase } from "../types/cluster";
+import type { AbortReason, Phase } from "../types/cluster";
 import styles from "./PeerView.module.css";
 
 /**
@@ -50,6 +50,36 @@ const HINTS: Record<Phase, string> = {
   error: "起動に失敗しました",
 };
 
+/**
+ * 再編成中の文言。増えたときと減ったときで受け取り方が違うので分ける
+ * (人が増えていく様子を見せるのが狙いで、減ったときと同じ顔では出せない)。
+ * hint は何が起きたか、notice はこれからどうなるかを担う。
+ */
+const REORGANIZING_TEXT: Record<AbortReason, { hint: string; notice: string }> = {
+  peer_joined: {
+    hint: "新しい参加者が増えました",
+    notice: "新しい参加者を加えて組み直しています",
+  },
+  peer_disconnected: {
+    hint: "参加者が減りました",
+    notice: "抜けたぶんを埋めて組み直しています",
+  },
+};
+
+const REORGANIZING_FALLBACK = {
+  hint: HINTS.reorganizing,
+  notice: "メンバーが変わったため再編成しています",
+};
+
+/**
+ * きっかけが分からないまま再編成中になることがある(開発パネルからの直接遷移、
+ * 世代の途中から画面を開いた場合など)。そのときは元の固定文言に戻す
+ */
+function reorganizingText(reason: AbortReason | null) {
+  if (!reason) return REORGANIZING_FALLBACK;
+  return REORGANIZING_TEXT[reason] ?? REORGANIZING_FALLBACK;
+}
+
 export function PeerView() {
   const [joined, setJoined] = useState(false);
   const [displayName, setDisplayName] = useState(DEFAULT_DISPLAY_NAME);
@@ -61,6 +91,7 @@ export function PeerView() {
 
   const { phase } = state;
   const isActive = phase === "active";
+  const reorganizing = reorganizingText(state.abortReason);
 
   // 発表者とのDataChannelの上でRPCを話す側。①のWASMが起動したら
   // `Module.PeerManager = rpc.manager` で載せる。releaseBuf はそのとき一緒に渡す
@@ -147,11 +178,15 @@ export function PeerView() {
       <div className={styles.body}>
         <StatusBlock
           title={TITLES[phase]}
-          hint={HINTS[phase]}
+          hint={phase === "reorganizing" ? reorganizing.hint : HINTS[phase]}
           active={isActive}
           pulsing={isActive && stats.busy}
           showDot={phase !== "idle"}
         />
+
+        {phase === "error" && state.errorMessage && (
+          <p className={styles.errorDetail}>{state.errorMessage}</p>
+        )}
 
         {phase === "idle" && (
           <div className={styles.form}>
@@ -185,9 +220,7 @@ export function PeerView() {
 
         {phase === "connecting" && <ProgressBar value={progress} label="発表者との直接接続" />}
 
-        {phase === "reorganizing" && (
-          <p className={styles.notice}>メンバーが変わったため再編成しています</p>
-        )}
+        {phase === "reorganizing" && <p className={styles.notice}>{reorganizing.notice}</p>}
 
         {(phase === "connecting" || phase === "active" || phase === "reorganizing") && (
           <LayerBar

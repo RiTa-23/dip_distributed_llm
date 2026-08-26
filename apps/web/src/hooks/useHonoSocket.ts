@@ -13,6 +13,18 @@ import { WS_PATH, WS_URL_OVERRIDE } from "../config";
 const RETRY_MS = [250, 500, 1000, 2000, 4000];
 
 /**
+ * 待ち時間に混ぜる散らばりの幅(±30%)。
+ * 固定値のままだと、サーバの再起動で一斉に切れた全員が同じ時刻に叩き直し、
+ * 起動直後のHonoに山が立つ。人数が増えるほど効く
+ */
+const JITTER = 0.3;
+
+function nextWait(retry: number): number {
+  const base = RETRY_MS[Math.min(retry, RETRY_MS.length - 1)];
+  return base * (1 - JITTER + Math.random() * JITTER * 2);
+}
+
+/**
  * 受信を1件ずつ流す間隔。0でも1タスクずつに分かれる。
  * 同じtickで setLastMessage を2回呼ぶと後の1件しか残らず、
  * roster_update と generation_aborted が続けて届いたときに前者が消える。
@@ -113,7 +125,7 @@ export function useHonoSocket({ enabled }: SocketOptions): HonoSocket {
         // generation_start が届き、離脱したはずの画面が受信中へ戻る
         clearQueue();
         setConnected(false);
-        const wait = RETRY_MS[Math.min(retry, RETRY_MS.length - 1)];
+        const wait = nextWait(retry);
         retry += 1;
         retryTimer = window.setTimeout(open, wait);
       };

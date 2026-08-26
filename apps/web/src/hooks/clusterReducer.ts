@@ -26,7 +26,7 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
 
     case "socket_closed":
       // 世代も戻す。残すと離脱後の上端に「0人 · 第N世代」が出る
-      return { ...s, phase: "idle", roster: [], generation: 0 };
+      return { ...s, phase: "idle", roster: [], generation: 0, abortReason: null };
 
     case "local_ready":
       // 編成が先に始まっていた場合に巻き戻さない
@@ -39,7 +39,14 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
       return { ...s, phase: "error", errorMessage: a.message };
 
     case "reset":
-      return { ...s, phase: "idle", roster: [], generation: 0, errorMessage: null };
+      return {
+        ...s,
+        phase: "idle",
+        roster: [],
+        generation: 0,
+        errorMessage: null,
+        abortReason: null,
+      };
 
     case "dev_set_phase":
       return { ...s, phase: a.phase };
@@ -51,12 +58,14 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
           return { ...s, roster: a.msg.peers };
 
         case "generation_start":
-          return { ...s, generation: a.msg.generation, phase: "connecting" };
+          // 編成し直しが済んだ。きっかけはもう表示しない
+          return { ...s, generation: a.msg.generation, phase: "connecting", abortReason: null };
 
         case "generation_aborted":
           // 古い世代の通知が遅れて届くことがある。捨てないと正常な編成が巻き込まれる
           if (a.msg.generation < s.generation) return s;
-          return { ...s, phase: "reorganizing" };
+          // reason は画面の文言の出し分けにだけ使う。判断はしない
+          return { ...s, phase: "reorganizing", abortReason: a.msg.reason };
 
         case "webrtc_signal":
           // 接続手続きのメッセージ。フェーズには関係しない
