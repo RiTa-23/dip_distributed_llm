@@ -296,6 +296,7 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 | `nodeId` は自分の `clientId` をそのまま渡す | llama.cppの `rpc_servers` の文字列がそのまま `connect(nodeId, done)` に来るため([`lib/clientId.ts`](../apps/web/src/lib/clientId.ts)) |
 | 起動関数の名前は候補から探す | ①のビルドがまだ無く、実際の名前を確認できない。`ENTRY_NAMES` に1行足せば済む形にしてある |
 | 起動関数が返らなくても先へ進む | rpc-server役は待ち受けたまま戻らない作りがありうる。待ち続けると準備中で止まる |
+| 1つのPeerManagerにエンジンは1つ | 参加 → 離脱 → 再参加で起動処理は何度でも呼ばれる。起動中の再参加は走っているものに相乗りし、載ったあとは覚えたものを返す(`createEngineStarter`)。素通しすると同じ回線の上にrpc-serverが2つ立つ |
 
 `releaseBuf` を `setOptions` で直接入れずに `PeerView` のstateに持たせているのは、`usePeerManager` が描画のたびに渡されたオプションで上書きするからです。外から入れた値は次の描画で消えます。
 

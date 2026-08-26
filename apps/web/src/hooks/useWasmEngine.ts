@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { startWasmEngine } from "../webrtc/wasmEngine";
+import { createEngineStarter } from "../webrtc/wasmEngine";
 import type { EngineRole, EngineStartResult, ReleaseBuf } from "../webrtc/wasmEngine";
 import type { LlamaPeerManager } from "../webrtc/peerManager";
 
@@ -11,8 +11,6 @@ import type { LlamaPeerManager } from "../webrtc/peerManager";
  * 「いつ始めるか」「終わったら誰に知らせるか」だけ。フェーズの判断はしない
  * (`useHonoSocket` / `useWebrtcSignaling` と同じ)。
  */
-export type WasmEngineStatus = "idle" | "starting" | "wasm" | "fallback";
-
 export type UseWasmEngineOptions = {
   role: EngineRole;
   /** `Module.PeerManager` に載せる本体。`usePeerManager()` の `manager` */
@@ -33,9 +31,13 @@ export type UseWasmEngineOptions = {
   onReleaseBuf?: (releaseBuf: ReleaseBuf | undefined) => void;
 };
 
-export function useWasmEngine(options: UseWasmEngineOptions): WasmEngineStatus {
+/**
+ * 返すのは直近の起動の結果(まだ終わっていなければ `null`)。表示には使っていないが、
+ * WASMで載ったのかダミー経路なのかを画面から見分けられるようにしてある。
+ */
+export function useWasmEngine(options: UseWasmEngineOptions): EngineStartResult | null {
   const { role, manager, nodeId, enabled } = options;
-  const [status, setStatus] = useState<WasmEngineStatus>("idle");
+  const [result, setResult] = useState<EngineStartResult | null>(null);
 
   // 描画のたびに最新のコールバックを預け直す。依存配列に入れると、
   // 描画のたびに起動をやり直してしまう
@@ -44,38 +46,25 @@ export function useWasmEngine(options: UseWasmEngineOptions): WasmEngineStatus {
     latest.current = options;
   });
 
-  // 一度WASMが載ったら載せ直さない。`Module.PeerManager` を差し替える手段が無く、
-  // rpc-server役も動いたままなので、再参加では起動済みのものを使い回す。
-  // ダミー経路はここに残さない(参加のたびに従来どおり待たせる)
-  const started = useRef<EngineStartResult | null>(null);
+  // 「1つのPeerManagerにエンジンは1つ」を守るのはこの箱の役目。走っている最中の
+  // 再参加は相乗りし、載ったあとは覚えたものが返る(`webrtc/wasmEngine.ts`)
+  const [starter] = useState(createEngineStarter);
 
   useEffect(() => {
     if (!enabled) return;
 
-    if (started.current) {
-      setStatus("wasm");
-      latest.current.onReady();
-      return;
-    }
-
     const controller = new AbortController();
-    setStatus("starting");
 
-    void startWasmEngine({ role, manager, nodeId, signal: controller.signal }).then((result) => {
-      // 中断されていても、載ったことは覚えておく。忘れると離脱→再参加で
-      // もう一度 startServer() を呼んでしまう
-      if (result.mode === "wasm") {
-        started.current = result;
-        latest.current.onReleaseBuf?.(result.releaseBuf);
-      }
+    void starter.start({ role, manager, nodeId, signal: controller.signal }).then((started) => {
+      if (started.mode === "wasm") latest.current.onReleaseBuf?.(started.releaseBuf);
       // 画面を離れたあとに準備完了を出さない(離脱してから前の起動が返ることがある)
       if (controller.signal.aborted) return;
-      setStatus(result.mode);
+      setResult(started);
       latest.current.onReady();
     });
 
     return () => controller.abort();
-  }, [enabled, role, manager, nodeId]);
+  }, [enabled, role, manager, nodeId, starter]);
 
-  return status;
+  return result;
 }

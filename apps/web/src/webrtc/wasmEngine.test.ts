@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { startWasmEngine } from "./wasmEngine";
+import { createEngineStarter, startWasmEngine } from "./wasmEngine";
 import type { EngineLogger, LlmletModule, StartEngineOptions } from "./wasmEngine";
 import type { LlamaPeerManager } from "./peerManager";
 
@@ -191,5 +191,92 @@ describe("startWasmEngine", () => {
 
     expect(result.mode).toBe("fallback");
     expect(Date.now() - started).toBeLessThan(1000);
+  });
+});
+
+describe("createEngineStarter", () => {
+  /** 起動関数の呼ばれた回数と、読み込みを外から解決できる口を返す */
+  function createModuleSource() {
+    const state = { imports: 0, started: 0, release: [] as number[] };
+    let release: ((value: unknown) => void) | null = null;
+    const mod: LlmletModule = {
+      release_conn: (ptr) => state.release.push(ptr),
+      startServer: () => state.started++,
+    };
+    return {
+      state,
+      /** 保留していた読み込みを終わらせる */
+      finish: () => release?.({ default: () => mod }),
+      importModule: (): Promise<unknown> => {
+        state.imports++;
+        if (release) return Promise.resolve({ default: () => mod });
+        return new Promise((resolve) => {
+          release = resolve;
+        });
+      },
+    };
+  }
+
+  test("起動中に呼び直されたら相乗りする(離脱→再参加でrpc-serverを2つ立てない)", async () => {
+    const source = createModuleSource();
+    const starter = createEngineStarter();
+    const opts = options({ importModule: source.importModule });
+
+    // 1回目(参加)→ 起動が返る前に2回目(離脱してすぐ再参加)
+    const first = starter.start(opts);
+    const second = starter.start(opts);
+    source.finish();
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(a).toBe(b);
+    expect(a.mode).toBe("wasm");
+    expect(source.state.imports).toBe(1);
+    expect(source.state.started).toBe(1);
+  });
+
+  test("一度載ったら次の参加では載せ直さない", async () => {
+    const source = createModuleSource();
+    const starter = createEngineStarter();
+    const opts = options({ importModule: source.importModule });
+
+    const first = starter.start(opts);
+    source.finish();
+    await first;
+    const again = await starter.start(opts);
+
+    expect(again.mode).toBe("wasm");
+    expect(source.state.imports).toBe(1);
+    expect(source.state.started).toBe(1);
+  });
+
+  test("中断されても、載ったことは覚えている", async () => {
+    // 起動が終わる直前に離脱した場合。忘れると再参加で startServer() をもう一度呼ぶ
+    const source = createModuleSource();
+    const starter = createEngineStarter();
+    const controller = new AbortController();
+    const opts = options({ importModule: source.importModule, signal: controller.signal });
+
+    const first = starter.start(opts);
+    controller.abort();
+    source.finish();
+    expect((await first).mode).toBe("wasm");
+
+    await starter.start(opts);
+    expect(source.state.started).toBe(1);
+  });
+
+  test("ダミー経路は覚えない(参加のたびに待たせる)", async () => {
+    let imports = 0;
+    const starter = createEngineStarter();
+    const opts = options({
+      importModule: () => {
+        imports++;
+        return Promise.reject(new Error("404"));
+      },
+    });
+
+    expect((await starter.start(opts)).mode).toBe("fallback");
+    expect((await starter.start(opts)).mode).toBe("fallback");
+    expect(imports).toBe(2);
   });
 });

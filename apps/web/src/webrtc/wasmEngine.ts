@@ -86,7 +86,13 @@ export type StartEngineOptions = {
   importModule?: (url: string) => Promise<unknown>;
   fallbackDelayMs?: number;
   entryTimeoutMs?: number;
-  /** 画面を離れたら待ちを打ち切る。中断しても結果は返るので、呼ぶ側が `aborted` を見る */
+  /**
+   * ダミー経路の待ちを打ち切る。画面を離れたときに2.2秒を待たせないためのもの。
+   *
+   * **読み込めた側は中断しない。** 途中で捨てると、WASM側だけ起動しているのに
+   * こちらは「起動していない」と思っている状態が残り、再参加でもう一度
+   * 起動関数を呼んでしまう。中断しても結果は返るので、呼ぶ側が `aborted` を見る。
+   */
   signal?: AbortSignal;
   logger?: EngineLogger;
 };
@@ -116,7 +122,9 @@ export async function startWasmEngine(options: StartEngineOptions): Promise<Engi
   } catch (error) {
     return fallback(`${url} を読み込めませんでした(${describeError(error)})。`);
   }
-  if (signal?.aborted) return { mode: "fallback", reason: "中断されました" };
+
+  // ここから先は中断で抜けない。読み込めた以上、最後まで進めて結果を返す
+  // (`signal` のコメントを参照)
 
   // 差し込み。これ以降、WASM側は我々のDataChannelを回線として使える。
   // factoryへも同じものを渡してあるが(instantiate)、初期化の作りに依らないよう二重に置く
@@ -143,10 +151,46 @@ export async function startWasmEngine(options: StartEngineOptions): Promise<Engi
 
   const started = await runEntry(entry.fn, nodeId, options.entryTimeoutMs ?? ENTRY_TIMEOUT_MS, log);
   if (!started) return fallback(`${entry.name}() が失敗しました。`);
-  if (signal?.aborted) return { mode: "fallback", reason: "中断されました" };
 
   log.info(`[wasm] ${url} を読み込み、${entry.name}() で起動しました(nodeId: ${nodeId})`);
   return { mode: "wasm", module: mod, entry: entry.name, releaseBuf };
+}
+
+export type EngineStarter = {
+  /** 起動する。走っている最中に呼ばれたら相乗りし、載ったあとは覚えたものを返す */
+  start: (options: StartEngineOptions) => Promise<EngineStartResult>;
+};
+
+/**
+ * 「1つのPeerManagerに対してエンジンは1つ」を守る箱。画面ごとに1つ持つ。
+ *
+ * 参加 → 離脱 → 再参加で `start()` は何度でも呼ばれる。素通しすると2つの問題が出る。
+ *
+ * - **起動中に再参加すると、2つ目のrpc-serverが同じ `manager` の上に立つ。**
+ *   起動関数が返らない作りだと窓は `ENTRY_TIMEOUT_MS` まで開く
+ * - **一度載ったWASMは載せ直せない。** `Module.PeerManager` を差し替える手段がない
+ *
+ * どちらも「走っているものに相乗りする」「載ったら覚える」で塞げる。
+ * ダミー経路は覚えない(参加のたびに従来どおり待たせる)。
+ */
+export function createEngineStarter(): EngineStarter {
+  let loaded: EngineStartResult | null = null;
+  let inFlight: Promise<EngineStartResult> | null = null;
+
+  return {
+    start: (options) => {
+      if (loaded) return Promise.resolve(loaded);
+      if (inFlight) return inFlight;
+
+      const boot = startWasmEngine(options).then((result) => {
+        if (result.mode === "wasm") loaded = result;
+        if (inFlight === boot) inFlight = null;
+        return result;
+      });
+      inFlight = boot;
+      return boot;
+    },
+  };
 }
 
 /** 既定の読み込み。viteに解決させない(ビルド時点ではファイルが存在しないため) */
