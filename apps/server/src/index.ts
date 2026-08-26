@@ -22,10 +22,17 @@ const port = Number(process.env.PORT ?? (hasTls ? 8443 : 3000));
 // すべてのレスポンスに COOP/COEP を付与する(#13)。
 // WASM版llama.cppがpthread(SharedArrayBuffer)を使うため cross-origin isolation が必須。
 // secure context(HTTPS)と合わせて初めて crossOriginIsolated === true になる。
+//
+// ここで `c.header()` を使ってはいけない(#53)。`c.header()` は Response を作り直し、
+// その過程で本文が ReadableStream に化けて `Content-Length` が失われる。全レスポンスが
+// チャンク転送になり、GGUFのダウンロードで
+//   - 分母が分からずフロントが進捗率を出せない
+//   - Range が効かず、途中で切れると最初からやり直しになる
+// という症状が出ていた。既存の Headers を直接書き換えれば本文はそのまま通る。
 app.use("*", async (c, next) => {
   await next();
-  c.header("Cross-Origin-Opener-Policy", "same-origin");
-  c.header("Cross-Origin-Embedder-Policy", "require-corp");
+  c.res.headers.set("Cross-Origin-Opener-Policy", "same-origin");
+  c.res.headers.set("Cross-Origin-Embedder-Policy", "require-corp");
 });
 
 // --- 制御プレーン(#16-19) ---
@@ -101,6 +108,16 @@ app.get("/join-info", (c) =>
 // マウント順が重要: models / wasm を先に処理し、最後に web-dist(SPA)へフォールバックする。
 // モデル(GGUF)・WASMグルーコードは ./public から配信。
 // 実データ(テンソル)は WebRTC P2P で流れるため Hono は中継しない(AGENTS.md 前提2)。
+// Range に対応していることを明示する。`serveStatic` は Range 要求に 206 を返せるが
+// `Accept-Ranges` は付けないため、クライアントが試す前に判断できない(#53)
+app.use("/models/*", async (c, next) => {
+  await next();
+  c.res.headers.set("Accept-Ranges", "bytes");
+});
+app.use("/wasm/*", async (c, next) => {
+  await next();
+  c.res.headers.set("Accept-Ranges", "bytes");
+});
 app.use("/models/*", serveStatic({ root: "./public" }));
 app.use("/wasm/*", serveStatic({ root: "./public" }));
 // 見つからなければ 404。下の SPA フォールバックに落として index.html を返さないため。
