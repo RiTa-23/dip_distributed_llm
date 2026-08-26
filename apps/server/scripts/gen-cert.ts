@@ -9,21 +9,24 @@ import { join } from "node:path";
 import { pickLanAddresses } from "../src/lanAddress";
 
 const certsDir = join(import.meta.dir, "..", "certs");
-mkdirSync(certsDir, { recursive: true });
 
 const extraHosts = process.argv.slice(2);
 const lanIps = pickLanAddresses(networkInterfaces());
 const hosts = [...new Set(["localhost", "127.0.0.1", "::1", ...lanIps, ...extraHosts])];
 
+// mkcert の有無を先に見る。ここで抜ける場合に空の certs/ を作り残さないため、
+// ディレクトリ作成はこの下で行う
 if (Bun.which("mkcert") == null) {
   console.error(
     "mkcert が見つかりません。導入してください:\n" +
       "  macOS  : brew install mkcert nss\n" +
-      "  Windows: choco install mkcert  (または scoop install mkcert)\n" +
+      "  Windows: winget install FiloSottile.mkcert  (choco/scoop なら choco install mkcert)\n" +
       "  Linux  : https://github.com/FiloSottile/mkcert#linux",
   );
   process.exit(1);
 }
+
+mkdirSync(certsDir, { recursive: true });
 
 function run(cmd: string[]): void {
   const proc = Bun.spawnSync(cmd, { stdout: "inherit", stderr: "inherit" });

@@ -11,7 +11,7 @@
       "name": "server",
       "runtimeExecutable": "bun",
       "runtimeArgs": ["run", "--cwd", "apps/server", "dev"],
-      "port": 3000
+      "port": 8443
     }
   ]
 }
