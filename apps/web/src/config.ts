@@ -12,6 +12,16 @@ export const MODEL_NAME = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
 export const DEFAULT_DISPLAY_NAME = "参加者のPC";
 
 /**
+ * 再編成中がこれだけ続いたら、画面に案内と繋ぎ直しの導線を出す(#63)。
+ *
+ * 正常な再編成でも待ち時間はある。増えた側のエンジン起動が終わるまで
+ * Honoは次の `generation_start` を出せないため、既存の参加者はそのあいだ
+ * 再編成中で止まる(今のダミー起動で2.2秒、①のWASMが載ればもう少し伸びる)。
+ * それを踏まえて余裕をとった値で、正常系でこの案内が出てはいけない。
+ */
+export const REORGANIZING_STALL_MS = 12_000;
+
+/**
  * `/ws` の接続先の上書き。既定(空文字)では画面を配信しているオリジンへ繋ぐ。
  * viteのdevサーバ(5173)とHono(8443)を別々に動かすときだけ使う。
  *   例: VITE_HONO_WS_URL=wss://localhost:8443/ws bun run dev
