@@ -1,4 +1,13 @@
-import type { PeerInfo } from "@dip_distributed_llm/shared-types/messages";
+import type {
+  GenerationAbortedMessage,
+  PeerInfo,
+} from "@dip_distributed_llm/shared-types/messages";
+
+/**
+ * 再編成が始まったきっかけ。Honoの generation_aborted の reason をそのまま持つ。
+ * 契約の値が増えたらここも自動で追随する(独自の文字列を定義しない)。
+ */
+export type AbortReason = GenerationAbortedMessage["reason"];
 
 /**
  * 画面が取りうる状態。
@@ -43,6 +52,11 @@ export type ClusterState = {
   roster: PeerInfo[];
   generation: number;
   errorMessage: string | null;
+  /**
+   * 直前の再編成のきっかけ。人が増えたのか減ったのかを画面が出し分けるために持つ。
+   * 編成が終わったら(次の世代が始まったら)null に戻す
+   */
+  abortReason: AbortReason | null;
 };
 
 export const initialClusterState: ClusterState = {
@@ -50,4 +64,5 @@ export const initialClusterState: ClusterState = {
   roster: [],
   generation: 0,
   errorMessage: null,
+  abortReason: null,
 };
