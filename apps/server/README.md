@@ -44,8 +44,12 @@ bun run dev
   自己署名/独自証明書で `wss` が無言失敗するのを防ぐため。
 - Windowsのcurlで疎通確認すると、TLS自体は正しいのに
   `curl: (35) schannel: ... CRYPT_E_NO_REVOCATION_CHECK` で落ちる。
-  schannelが証明書の失効確認を要求する一方、mkcertのCAには失効リストの配布点が無いため。
-  `curl --ssl-no-revoke` を付ければ通る。ブラウザは失効確認を要求しないのでデモ本番には影響しない
+  mkcertが発行する証明書には失効情報(CRL配布点/OCSP URL)が無く、
+  Windowsのschannelは「失効確認ができないこと」自体をエラーにするため。
+  **ローカルのmkcert証明書を叩くときに限り** `curl --ssl-no-revoke` で回避できる
+  (失効確認を無効化するオプションなので、公開CAの証明書に対して常用しないこと)。
+  ブラウザは失効情報を持たない証明書を確認不能として通すため、この現象は踏まない。
+  ただし確認したのは macOS の Chrome のみで、Windows のブラウザでは未確認
 
 ## 配信ルート
 

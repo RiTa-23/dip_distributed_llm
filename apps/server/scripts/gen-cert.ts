@@ -20,7 +20,8 @@ if (Bun.which("mkcert") == null) {
   console.error(
     "mkcert が見つかりません。導入してください:\n" +
       "  macOS  : brew install mkcert nss\n" +
-      "  Windows: winget install FiloSottile.mkcert  (choco/scoop なら choco install mkcert)\n" +
+      "  Windows: winget install FiloSottile.mkcert\n" +
+      "           choco install mkcert  /  scoop install mkcert  でも可\n" +
       "  Linux  : https://github.com/FiloSottile/mkcert#linux",
   );
   process.exit(1);
