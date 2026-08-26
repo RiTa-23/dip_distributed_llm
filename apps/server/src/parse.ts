@@ -54,6 +54,11 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
         },
       };
     }
+    case "requester_accepting": {
+      const { accepting } = raw;
+      if (typeof accepting !== "boolean") return null;
+      return { type: "requester_accepting", accepting };
+    }
     default:
       return null;
   }

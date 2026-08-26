@@ -23,6 +23,13 @@ export type ClusterState = {
   clients: Map<string, ClientRecord>;
   generation: number;
   phase: GenerationPhase;
+  /** 直近開始した世代に含まれるpeerIdの一覧。新規加入の判定(未加入かどうか)に使う。 */
+  activeGenerationPeerIds: string[] | null;
+  /**
+   * 生成中に新規peerが ready になったとき、Honoが能動的に再編成してよいか。
+   * requester が `requester_accepting` で操作する。既定 true(未操作なら従来通り即再編成)。
+   */
+  acceptingGrowth: boolean;
 };
 
 /** wiring 層が解釈する送出指示。broadcast=全員へ / unicast=targetId のみへ。 */
@@ -31,7 +38,13 @@ export type Effect =
   | { kind: "unicast"; targetId: string; msg: ServerMessage };
 
 export function createState(): ClusterState {
-  return { clients: new Map(), generation: 0, phase: "idle" };
+  return {
+    clients: new Map(),
+    generation: 0,
+    phase: "idle",
+    activeGenerationPeerIds: null,
+    acceptingGrowth: true,
+  };
 }
 
 /** ロスターは peer のみを含める(requester は載せない)。 */
@@ -89,14 +102,45 @@ function maybeStartGeneration(state: ClusterState): Effect[] {
   if (!allPeersReady(state)) return [];
   if (!hasRequester(state)) return [];
 
+  const peerIds = currentRoster(state).map((p) => p.clientId);
   state.generation += 1;
   state.phase = "active";
+  state.activeGenerationPeerIds = peerIds;
   const msg: GenerationStartMessage = {
     type: "generation_start",
     generation: state.generation,
-    peerIds: currentRoster(state).map((p) => p.clientId),
+    peerIds,
   };
   return [{ kind: "broadcast", msg }];
+}
+
+/** 稼働中の世代に含まれていない、ready な peer が存在するか(=生成中に加入した新規peer)。 */
+function hasUnjoinedReadyPeer(state: ClusterState): boolean {
+  const joined = new Set(state.activeGenerationPeerIds ?? []);
+  for (const [clientId, c] of state.clients) {
+    if (c.role === "peer" && c.status === "ready" && !joined.has(clientId)) return true;
+  }
+  return false;
+}
+
+/**
+ * 生成中(active)に新規peerが加入してreadyになった場合の再編成。
+ * acceptingGrowthがfalseの間は保留し、trueに戻った時点でまとめて取り込む(#34)。
+ * disconnect起因の中断とは異なり、こちらはrequesterの明示的な許可がある時だけ発火する。
+ */
+function maybeReformForGrowth(state: ClusterState): Effect[] {
+  if (state.phase !== "active") return [];
+  if (!state.acceptingGrowth) return [];
+  if (!hasUnjoinedReadyPeer(state)) return [];
+
+  const aborted: GenerationAbortedMessage = {
+    type: "generation_aborted",
+    generation: state.generation,
+    reason: "peer_joined",
+    message: "新しい参加者が増えたため再編成します",
+  };
+  state.phase = "idle";
+  return [{ kind: "broadcast", msg: aborted }, ...maybeStartGeneration(state)];
 }
 
 /** hello: クライアントを登録(再接続も含め常に connecting で入れ直す)。 */
@@ -107,10 +151,17 @@ export function applyHello(
   displayName: string,
 ): Effect[] {
   state.clients.set(clientId, { role, displayName, status: "connecting" });
+  // requesterの(再)接続でacceptingGrowthをtrueにリセットする。操作者不在のまま
+  // falseに固定されて新規peerが永久に取り込まれなくなるのを防ぐ(#34)。
+  if (role === "requester") state.acceptingGrowth = true;
   return [{ kind: "broadcast", msg: rosterUpdate(state) }, ...maybeStartGeneration(state)];
 }
 
-/** peer_status: ステータス更新 → ロスター再配信 → 条件を満たせば世代開始。 */
+/**
+ * peer_status: ステータス更新 → ロスター再配信 → 条件を満たせば世代開始/再編成。
+ * idle中はmaybeStartGeneration、active中はmaybeReformForGrowthがそれぞれ担当し、
+ * どちらも自身の対象外フェーズでは即座に空配列を返すため無条件に両方呼んでよい。
+ */
 export function applyPeerStatus(
   state: ClusterState,
   clientId: string,
@@ -119,7 +170,26 @@ export function applyPeerStatus(
   const c = state.clients.get(clientId);
   if (!c) return []; // hello 前 / 未知クライアントは無視
   c.status = status;
-  return [{ kind: "broadcast", msg: rosterUpdate(state) }, ...maybeStartGeneration(state)];
+  return [
+    { kind: "broadcast", msg: rosterUpdate(state) },
+    ...maybeStartGeneration(state),
+    ...maybeReformForGrowth(state),
+  ];
+}
+
+/**
+ * requester_accepting: 生成中に新規peerを取り込んでよいかをrequesterが操作する。
+ * 送信者がrole==='requester'であることを検証し、それ以外は無視する(#34)。
+ */
+export function applyRequesterAccepting(
+  state: ClusterState,
+  clientId: string,
+  accepting: boolean,
+): Effect[] {
+  const c = state.clients.get(clientId);
+  if (!c || c.role !== "requester") return []; // requester以外からの送信は無視
+  state.acceptingGrowth = accepting;
+  return accepting ? maybeReformForGrowth(state) : [];
 }
 
 /** webrtc_signal: 中身を解釈せず targetId 宛に転送するだけ。宛先不明なら破棄。 */
@@ -133,7 +203,10 @@ export function applySignal(state: ClusterState, msg: WebrtcSignalMessage): Effe
  * その後、残ったメンバーで条件を満たせば次の世代を開始する。
  */
 export function applyDisconnect(state: ClusterState, clientId: string): Effect[] {
+  const wasRequester = state.clients.get(clientId)?.role === "requester";
   if (!state.clients.delete(clientId)) return [];
+  // requesterの切断でacceptingGrowthをtrueにリセットする(理由はapplyHelloと同じ、#34)。
+  if (wasRequester) state.acceptingGrowth = true;
 
   const effects: Effect[] = [{ kind: "broadcast", msg: rosterUpdate(state) }];
 

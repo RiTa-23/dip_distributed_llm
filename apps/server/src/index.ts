@@ -75,6 +75,9 @@ app.get(
           case "webrtc_signal":
             if (clientId) coordinator.signal(msg);
             break;
+          case "requester_accepting":
+            if (clientId) coordinator.requesterAccepting(clientId, msg.accepting);
+            break;
         }
       },
       onClose() {

@@ -45,7 +45,21 @@ SDP/ICE candidateをHono経由で相手に転送。requester→peer、peer→req
 ```json
 { "type": "generation_aborted", "generation": 3, "reason": "peer_disconnected", "message": "メンバーが変わったため再編成します" }
 ```
-受信後フロントは「再編成中」表示に切替、次の`generation_start`を待つ。
+受信後フロントは「再編成中」表示に切替、次の`generation_start`を待つ。`generation`には**中断した現世代の番号**を載せる(古い通知を`generation !== 現在値`で捨てるフロント側フィルタが依存するため)。
+
+`reason`:
+- `peer_disconnected`: 既存peerの切断で編成が壊れた
+- `peer_joined`: 生成中に新規peerが`ready`になり、Honoが能動的に組み直した(後述`requester_accepting`が`true`の間のみ)
+
+### 7. `requester_accepting` (client → server, requesterのみ)
+生成中(`active`)に新規peerが加入してもよいかをrequesterが伝える。Honoは送信者がrole===`requester`であることを検証し、それ以外からの送信は無視する。
+```json
+{ "type": "requester_accepting", "accepting": false }
+```
+- `false`の間、新規peerが`ready`になってもHonoは`roster_update`のみ配信し再編成しない(推論中に編成が割り込むのを防ぐ)
+- `true`に戻した瞬間、その間に溜まった未加入readyペアをまとめて1回の`generation_aborted`(reason: `peer_joined`)→`generation_start`で取り込む
+- 既定値は`true`(このメッセージを送らなくても、新規peerがreadyになれば従来通り即座に再編成される)
+- requesterが切断/再接続すると`true`にリセットされる
 
 ## データプレーン注記
 
