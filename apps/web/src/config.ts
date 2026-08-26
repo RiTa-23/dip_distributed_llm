@@ -58,3 +58,13 @@ export const USE_MOCK_SOCKET: boolean = import.meta.env.VITE_MOCK_SOCKET === "1"
  * `PeerView` 側は1行も変わらない。
  */
 export const FAKE_METRICS: boolean = import.meta.env.VITE_FAKE_METRICS === "1";
+
+/**
+ * ①のWASM(llmletのビルド)を読み込む先。Honoは `./public/wasm` をここへ配信する
+ * (`apps/server/src/index.ts`)。**まだビルドが置かれていないので今は404**で、
+ * そのときは起動処理がダミー経路へ落ちる(`webrtc/wasmEngine.ts`)。
+ *
+ * 読み込むのは静的配信されたグルーコードだけで、RPCの実データはHonoを通さず
+ * DataChannelを流れる(AGENTS.md 前提2)。
+ */
+export const WASM_MODULE_URL = "/wasm/llmlet-mod.js";
