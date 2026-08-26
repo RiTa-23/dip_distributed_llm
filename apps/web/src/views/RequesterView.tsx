@@ -218,9 +218,7 @@ export function RequesterView() {
                     </span>
                     <span className={styles.peerRange}>
                       {PEER_STATUS_LABEL[peer.status]}
-                      {assignment
-                        ? ` · 第${assignment.startLayer}〜${assignment.endLayer}層`
-                        : ""}
+                      {assignment ? ` · 第${assignment.startLayer}〜${assignment.endLayer}層` : ""}
                       {isComputing ? " · 計算中" : ""}
                     </span>
                     <span className={styles.peerBar} />

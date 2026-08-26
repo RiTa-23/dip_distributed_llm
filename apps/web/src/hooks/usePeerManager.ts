@@ -22,9 +22,7 @@ export type PeerManagerOptions = {
   onGenerationEvent?: (event: GenerationEvent) => void;
 };
 
-export type GenerationEvent =
-  | { type: "token"; token: string }
-  | { type: "generation_end" };
+export type GenerationEvent = { type: "token"; token: string } | { type: "generation_end" };
 
 /** useWebrtcSignaling へそのまま広げて渡せる形 */
 export type PeerManagerHandlers = {
