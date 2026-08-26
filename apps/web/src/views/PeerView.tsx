@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { TopBar } from "../components/TopBar";
 import { StatusBlock } from "../components/StatusBlock";
 import { LayerBar } from "../components/LayerBar";
@@ -10,13 +10,14 @@ import { useWebrtcSignaling } from "../hooks/useWebrtcSignaling";
 import type { WebrtcStatus } from "../hooks/useWebrtcSignaling";
 import { usePeerManager } from "../hooks/usePeerManager";
 import { usePeerStats } from "../hooks/usePeerStats";
+import { useStalled } from "../hooks/useStalled";
 import { useWasmEngine } from "../hooks/useWasmEngine";
 import type { ReleaseBuf } from "../webrtc/wasmEngine";
 import { getClientId } from "../lib/clientId";
 import { describeMemory, describeWebgpu } from "../lib/environment";
 import { useEnvironment } from "../hooks/useEnvironment";
 import { formatBytes, formatCount, formatDuration, NO_VALUE } from "../lib/format";
-import { DEFAULT_DISPLAY_NAME, TOTAL_LAYERS } from "../config";
+import { DEFAULT_DISPLAY_NAME, REORGANIZING_STALL_MS, TOTAL_LAYERS } from "../config";
 import type { AbortReason, Phase } from "../types/cluster";
 import styles from "./PeerView.module.css";
 
@@ -74,6 +75,15 @@ const REORGANIZING_FALLBACK = {
 };
 
 /**
+ * 再編成が長引いたときの案内(#63)。文字列をJSXの中に直接置くと、行を折り返した
+ * ぶんが半角スペースとして描画されて日本語の途中に隙間ができるため、ここで組む。
+ */
+const STALL_TITLE = "編成に時間がかかっています";
+const STALL_HINT =
+  "発表者の準備が終わっていないか、他の参加者を待っている可能性があります。" +
+  "このまま戻らないときは参加し直してください。";
+
+/**
  * きっかけが分からないまま再編成中になることがある(開発パネルからの直接遷移、
  * 世代の途中から画面を開いた場合など)。そのときは元の固定文言に戻す
  */
@@ -94,6 +104,11 @@ export function PeerView() {
   const { phase } = state;
   const isActive = phase === "active";
   const reorganizing = reorganizingText(state.abortReason);
+
+  // 再編成中から出る道はサーバの generation_start しかない。requesterが居ない、
+  // 誰かが ready にならない、といった理由で次の世代が組めないと、画面は無言のまま
+  // 止まる。時間で気づけるようにして、繋ぎ直しの導線を出す(#63)
+  const reorganizingStalled = useStalled(phase === "reorganizing", REORGANIZING_STALL_MS);
 
   // ①のWASMが載ると `Module.release_conn` が入る。載るまでは undefined のまま
   // (解放すべきバッファがそもそも作られない)。stateに持つ理由は
@@ -162,17 +177,37 @@ export function PeerView() {
     }
   }, [phase, rtc.status, dispatch]);
 
-  const join = () => {
+  const join = useCallback(() => {
     // 前回参加したぶんを持ち越さない。世代をまたいでも0には戻さないので、
     // 0に戻すのはここだけ
     rpc.manager.stats.reset();
     setJoined(true);
-  };
+  }, [rpc.manager]);
 
   const leave = () => {
     setJoined(false);
     dispatch({ type: "reset" });
   };
+
+  /**
+   * 参加し直す。leave() と join() を続けて呼んでも、同じ描画のあいだは `enabled` が
+   * false を通らず useHonoSocket の後片付けが走らない(WebSocketが閉じないので
+   * 繋ぎ直しにならない)。離脱が反映された次の描画で join() を通す。
+   *
+   * 予約を state ではなく ref に持つのは、この値で描画を変えないため。
+   */
+  const wantsRejoin = useRef(false);
+
+  const rejoin = () => {
+    wantsRejoin.current = true;
+    leave();
+  };
+
+  useEffect(() => {
+    if (joined || !wantsRejoin.current) return;
+    wantsRejoin.current = false;
+    join();
+  }, [joined, join]);
 
   return (
     <div className={styles.page}>
@@ -237,7 +272,18 @@ export function PeerView() {
 
         {phase === "connecting" && <ProgressBar value={progress} label="発表者との直接接続" />}
 
-        {phase === "reorganizing" && <p className={styles.notice}>{reorganizing.notice}</p>}
+        {phase === "reorganizing" &&
+          (reorganizingStalled ? (
+            <div className={styles.stall} role="status">
+              <p className={styles.stallTitle}>{STALL_TITLE}</p>
+              <p className={styles.stallHint}>{STALL_HINT}</p>
+              <button type="button" onClick={rejoin}>
+                参加し直す
+              </button>
+            </div>
+          ) : (
+            <p className={styles.notice}>{reorganizing.notice}</p>
+          ))}
 
         {(phase === "connecting" || phase === "active" || phase === "reorganizing") && (
           <LayerBar
