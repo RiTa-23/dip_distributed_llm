@@ -45,6 +45,10 @@ export class Coordinator {
     this.run(roster.applyRequesterAccepting(this.state, clientId, accepting));
   }
 
+  generationFailed(clientId: string, generation: number): void {
+    this.run(roster.applyGenerationFailed(this.state, clientId, generation));
+  }
+
   signal(msg: WebrtcSignalMessage): void {
     this.run(roster.applySignal(this.state, msg));
   }

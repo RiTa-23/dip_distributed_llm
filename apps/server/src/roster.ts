@@ -30,6 +30,11 @@ export type ClusterState = {
    * requester が `requester_accepting` で操作する。既定 true(未操作なら従来通り即再編成)。
    */
   acceptingGrowth: boolean;
+  /**
+   * 直前に編成へ失敗した顔ぶれ(#56)。同じ組み合わせでの即時リトライを避けるために持つ。
+   * 顔ぶれが変わるか、世代が始まったら null に戻す。
+   */
+  failedPeerIds: string[] | null;
 };
 
 /** wiring 層が解釈する送出指示。broadcast=全員へ / unicast=targetId のみへ。 */
@@ -44,6 +49,7 @@ export function createState(): ClusterState {
     phase: "idle",
     activeGenerationPeerIds: null,
     acceptingGrowth: true,
+    failedPeerIds: null,
   };
 }
 
@@ -62,15 +68,30 @@ function rosterUpdate(state: ClusterState): RosterUpdateMessage {
   return { type: "roster_update", peers: currentRoster(state) };
 }
 
-/** peer が1人以上いて、その全員が ready か。 */
-function allPeersReady(state: ClusterState): boolean {
-  let peerCount = 0;
-  for (const c of state.clients.values()) {
+/**
+ * 次の世代に入れる peer の一覧。組めないときは null。
+ *
+ * `error` の peer は「今回は参加しない」として数から外す(#57)。以前は全員が ready で
+ * なければ組めなかったため、1台でも error になると次の世代が永久に始まらず、
+ * フロントは error を送るに送れずにいた(docs/frontend.md「まだ無いもの」)。
+ * `connecting` はまだ準備中なので、これまで通り待つ。
+ */
+function eligiblePeerIds(state: ClusterState): string[] | null {
+  const ready: string[] = [];
+  for (const [clientId, c] of state.clients) {
     if (c.role !== "peer") continue;
-    if (c.status !== "ready") return false;
-    peerCount += 1;
+    if (c.status === "connecting") return null; // 準備中の人がいる。待つ
+    if (c.status === "ready") ready.push(clientId);
+    // error は編成に入れない。復帰して ready を送り直せば次の再編成で入る
   }
-  return peerCount > 0;
+  return ready.length > 0 ? ready : null;
+}
+
+/** 2つのpeerId一覧が同じ顔ぶれか(順序は問わない)。 */
+function sameMembers(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const set = new Set(a);
+  return b.every((id) => set.has(id));
 }
 
 /** 推論をオーケストレートする requester が接続しているか。 */
@@ -93,16 +114,23 @@ export function hasOtherRequester(state: ClusterState, clientId: string): boolea
 }
 
 /**
- * idle かつ「全peer ready」かつ「requester 接続中」のときだけ次の世代を開始する。
+ * idle かつ「組める peer がいる」かつ「requester 接続中」のときだけ次の世代を開始する。
  * active 中は発火しない(AGENTS.md 前提4: 増減は次の世代開始タイミングでのみ反映)。
  * requester 不在での開始を防ぐ(orchestrator が居ない生成を作らない)。
+ *
+ * 直前に同じ顔ぶれで編成に失敗している場合は開始しない(#56)。同じ組み合わせをすぐ
+ * 組み直すと、失敗し続けるあいだ generation_start が延々と出てしまう。誰かが増減するか
+ * status が変われば顔ぶれが変わり、そこで再開する。
  */
 function maybeStartGeneration(state: ClusterState): Effect[] {
   if (state.phase !== "idle") return [];
-  if (!allPeersReady(state)) return [];
   if (!hasRequester(state)) return [];
 
-  const peerIds = currentRoster(state).map((p) => p.clientId);
+  const peerIds = eligiblePeerIds(state);
+  if (peerIds === null) return [];
+  if (state.failedPeerIds !== null && sameMembers(state.failedPeerIds, peerIds)) return [];
+
+  state.failedPeerIds = null;
   state.generation += 1;
   state.phase = "active";
   state.activeGenerationPeerIds = peerIds;
@@ -190,6 +218,38 @@ export function applyRequesterAccepting(
   if (!c || c.role !== "requester") return []; // requester以外からの送信は無視
   state.acceptingGrowth = accepting;
   return accepting ? maybeReformForGrowth(state) : [];
+}
+
+/**
+ * generation_failed: requester が「この編成では繋がらなかった」と伝えてきたときの処理(#56)。
+ *
+ * 以前は active から idle へ戻る道が切断しかなく、requester が1人でも接続に失敗すると
+ * 誰かが切れるまで固まっていた。ここで idle に戻し、他の参加者にも中断を知らせる。
+ *
+ * 送信者が requester であること、世代番号が現在のものと一致することを確かめる。
+ * 古い世代の遅れた通知で、始まったばかりの編成を巻き込まないため。
+ */
+export function applyGenerationFailed(
+  state: ClusterState,
+  clientId: string,
+  generation: number,
+): Effect[] {
+  const c = state.clients.get(clientId);
+  if (!c || c.role !== "requester") return []; // requester以外からの送信は無視
+  if (state.phase !== "active") return [];
+  if (generation !== state.generation) return []; // 古い世代の通知
+
+  // 同じ顔ぶれをすぐ組み直さないよう、失敗した編成を覚えておく
+  state.failedPeerIds = state.activeGenerationPeerIds;
+
+  const aborted: GenerationAbortedMessage = {
+    type: "generation_aborted",
+    generation: state.generation,
+    reason: "connection_failed",
+    message: "接続できなかったため編成をやり直します",
+  };
+  state.phase = "idle";
+  return [{ kind: "broadcast", msg: aborted }, ...maybeStartGeneration(state)];
 }
 
 /** webrtc_signal: 中身を解釈せず targetId 宛に転送するだけ。宛先不明なら破棄。 */

@@ -14,6 +14,7 @@ const SIGNAL_KINDS = ["offer", "answer", "ice-candidate"] as const satisfies rea
 const ABORT_REASONS = [
   "peer_disconnected",
   "peer_joined",
+  "connection_failed",
 ] as const satisfies readonly GenerationAbortedMessage["reason"][];
 
 type JsonObject = Record<string, unknown>;
