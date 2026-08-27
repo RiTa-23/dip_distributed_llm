@@ -19,6 +19,7 @@ export type ClusterAction =
   /** 開発用パネル専用。任意のフェーズへ飛ばす */
   | { type: "dev_set_phase"; phase: Phase };
 
+/** サーバー通知とブラウザ内イベントから参加者・発表者の状態を更新する。 */
 export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState {
   switch (a.type) {
     case "socket_opened":

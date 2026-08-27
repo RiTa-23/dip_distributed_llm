@@ -34,6 +34,7 @@ const PEER_STATUS_LABEL: Record<string, string> = {
   error: "エラー",
 };
 
+/** 発表者側のチャットUIと、参加者の接続・再編成状態を表示する。 */
 export function RequesterView() {
   const { state, dispatch, send, lastMessage, assignments, debug } = useCluster({ enabled: true });
   const [modelProgress, setModelProgress] = useState(0);
