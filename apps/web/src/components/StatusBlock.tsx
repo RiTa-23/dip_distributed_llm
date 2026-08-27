@@ -18,7 +18,10 @@ type Props = {
 export function StatusBlock({ title, hint, active = false, pulsing, showDot = true }: Props) {
   const beating = pulsing ?? active;
   return (
-    <div className={styles.block}>
+    // フェーズの見出し・説明文がここでしか変わらないので、状態変化の読み上げ領域は
+    // このブロックそのものに付ける(#66)。dot の pulse はクラス属性だけの変化で
+    // テキストノードを触らないため、脈打つたびに読み上げが連呼される心配はない
+    <div className={styles.block} aria-live="polite" aria-atomic="true">
       <div className={styles.label}>STATUS</div>
       <div className={styles.line}>
         {showDot && (
