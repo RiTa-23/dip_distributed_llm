@@ -104,10 +104,13 @@ function reorganizingText(reason: AbortReason | null) {
 export function PeerView() {
   const [joined, setJoined] = useState(false);
   const [displayName, setDisplayName] = useState(DEFAULT_DISPLAY_NAME);
+  // useCluster が初期状態に取り込むので、先に決めておく
+  const [myId] = useState(() => getClientId("peer"));
   const { state, dispatch, send, lastMessage, assignments, debug } = useCluster({
     enabled: joined,
+    myId,
+    role: "peer",
   });
-  const [myId] = useState(() => getClientId("peer"));
   const env = useEnvironment();
 
   const { phase } = state;
@@ -254,8 +257,21 @@ export function PeerView() {
           showDot={phase !== "idle"}
         />
 
-        {phase === "error" && state.errorMessage && (
-          <p className={styles.errorDetail}>{state.errorMessage}</p>
+        {/*
+          error から戻る道は、以前は TopBar の「離脱する」を押して表示名を入れ直し
+          「参加する」を押す2手しかなかった。編成から外れた参加者が error に留まる
+          ようになった(#79 の実機確認)ので、1手で戻れるようにする。
+          rejoin は離脱が反映された次の描画で join() を通す既存の経路
+        */}
+        {phase === "error" && (
+          <>
+            {state.errorMessage && <p className={styles.errorDetail}>{state.errorMessage}</p>}
+            <div className={styles.retry}>
+              <button type="button" onClick={rejoin}>
+                参加し直す
+              </button>
+            </div>
+          </>
         )}
 
         {phase === "idle" && (

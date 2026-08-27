@@ -5,11 +5,12 @@ import { ProgressBar } from "../components/ProgressBar";
 import { DevPanel } from "../components/DevPanel";
 import { JoinQr } from "../components/JoinQr";
 import { useCluster } from "../hooks/useCluster";
+import { useStalled } from "../hooks/useStalled";
 import { useWebrtcSignaling } from "../hooks/useWebrtcSignaling";
 import { usePeerManager } from "../hooks/usePeerManager";
 import type { GenerationEvent } from "../hooks/usePeerManager";
 import { getClientId } from "../lib/clientId";
-import { MODEL_NAME, TOTAL_LAYERS } from "../config";
+import { CONNECT_STALL_MS, MODEL_NAME, TOTAL_LAYERS } from "../config";
 import type { Phase } from "../types/cluster";
 import styles from "./RequesterView.module.css";
 
@@ -24,6 +25,13 @@ const NOTICE: Partial<Record<Phase, string>> = {
   error: "接続に失敗しました",
 };
 
+/**
+ * 配布中が長引いたときの案内(#78)。`NOTICE.connecting` を差し替える形で出す。
+ * 起きていることは「繋がらない参加者を待つのをやめて組み直しを頼んだ」なので、
+ * 配布中の文言のままでは何も起きていないように見える
+ */
+const CONNECT_STALL_NOTICE = "接続できない参加者がいます。編成を組み直しています";
+
 const DUMMY_ANSWER =
   "1つのモデルを層ごとに分けて、複数のPCが順番に計算を受け持つしくみです。" +
   "参加するPCが増えるほど、1台では載りきらない大きなモデルが動かせます。";
@@ -36,7 +44,13 @@ const PEER_STATUS_LABEL: Record<string, string> = {
 
 /** 発表者側のチャットUIと、参加者の接続・再編成状態を表示する。 */
 export function RequesterView() {
-  const { state, dispatch, send, lastMessage, assignments, debug } = useCluster({ enabled: true });
+  // useCluster が初期状態に取り込むので、先に決めておく
+  const [myId] = useState(() => getClientId("requester"));
+  const { state, dispatch, send, lastMessage, assignments, debug } = useCluster({
+    enabled: true,
+    myId,
+    role: "requester",
+  });
   const [modelProgress, setModelProgress] = useState(0);
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [streaming, setStreaming] = useState("");
@@ -48,8 +62,8 @@ export function RequesterView() {
   const toastTimer = useRef<number | null>(null);
   const previousRosterSize = useRef(state.roster.length);
   const previousGenerating = useRef(generating);
+  const previousConnectStalled = useRef(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [myId] = useState(() => getClientId("requester"));
 
   const { phase } = state;
 
@@ -130,6 +144,25 @@ export function RequesterView() {
     }
   }, [phase, rtc.status, dispatch]);
 
+  // 配布中が続くのは、answerを返さないまま黙っている参加者が居るとき。ICEが
+  // 諦めるのを待つと30秒以上かかるので、時間で見切ってHonoに編成のやり直しを頼む
+  // (#78の実機確認)。`useStalled` は watching が false を通ると測り直すので、
+  // 世代をまたいで経過を持ち越さない
+  const connectStalled = useStalled(phase === "connecting", CONNECT_STALL_MS);
+
+  // false→true に変わった1回だけ送る。
+  //
+  // ここでフェーズは動かさない(`dispatch({ type: "failed" })` はしない)。時間切れで
+  // 画面が勝手に別のフェーズへ移ると、遅れて届いた generation_start と食い違う。
+  // 動かすのはHonoが返す generation_aborted で、サーバが唯一の出口という形は変えない。
+  // 古い世代の時間切れは applyGenerationFailed が世代番号を見て捨てる
+  useEffect(() => {
+    if (previousConnectStalled.current === connectStalled) return;
+    previousConnectStalled.current = connectStalled;
+    if (!connectStalled) return;
+    send({ type: "generation_failed", generation: state.generation });
+  }, [connectStalled, send, state.generation]);
+
   // 推論中は新規peerの加入による再編成を保留させる(#50)。生成の開始・終了は
   // run() 側のタイマーとtoken/generation_end受信の両方から起きるので、
   // 発生源を1箇所に絞れる generating の変化を見て送る
@@ -196,7 +229,7 @@ export function RequesterView() {
 
   const computingClientId =
     computingIndex === null ? null : (assignments[computingIndex]?.clientId ?? null);
-  const notice = NOTICE[phase];
+  const notice = phase === "connecting" && connectStalled ? CONNECT_STALL_NOTICE : NOTICE[phase];
 
   return (
     <div className={styles.page}>

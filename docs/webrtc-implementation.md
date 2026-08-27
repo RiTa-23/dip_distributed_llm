@@ -158,7 +158,7 @@ function teardownAllConnections() {
 
 「1台が接続に失敗しても、残りで世代が始まる」を1台のPCで確かめる手順です。#78・#79の受け入れ条件がこの確認を要求しています。
 
-**2026/8/27時点では、この手順を最後まで踏んでも残りで世代は始まりません。** #79(参加者が `peer_status: "error"` を送る)までは通りますが、そこから先が止まります。理由は手順5のあとに書きました。つまりこれは現状では**受け入れ条件の未達を再現する手順**で、発表者側に失敗検知の時間切れが入って初めて「確認する手順」になります。
+最初にこの手順を踏んだ時点(2026/8/27)では、最後まで進めても残りで世代が始まりませんでした。#79(参加者が `peer_status: "error"` を送る)までは通っていて、そこから先が止まっていました。原因はつまずき3に書いたとおりで、**発表者側に時間切れ(`CONNECT_STALL_MS`)を入れて解消しました**。手順そのものはそのまま受け入れ条件の確認に使えます。
 
 **素直にやると3か所でつまずきます**(いずれも実際に踏みました)。順番に潰していきます。
 
@@ -215,7 +215,7 @@ RTCPeerConnection.prototype.createAnswer = () => Promise.reject(new Error("意�
 
 - **つまずき3: この壊し方だと発表者側の失敗検知はすぐには起きません。** 壊した参加者は「answerを返さないまま黙る」ので、発表者の `RTCPeerConnection` は `connectionState` が `failed` になるまで(ICEが諦めるまで)何も言いません
 - その間 Hono から見た `phase` は `active` のままで、`peer_status: "error"` を受けても編成を組み直せません(`applyPeerStatus` が呼ぶ `maybeStartGeneration` は idle 専用、`maybeReformForGrowth` は未参加のreadyなpeerを要求するため、どちらも空を返す)
-- **つまり復帰の速さは #79 ではなく発表者側の失敗検知の速さで決まります**
+- **つまり復帰の速さは #79 ではなく発表者側の失敗検知の速さで決まります。** これがあるので、発表者は配布中が `CONNECT_STALL_MS`(10秒)続いた時点でICEを待たずに `generation_failed` を送ります([`config.ts`](../apps/web/src/config.ts))
 
 #### 5. 開く順番と見るべき結果
 
@@ -224,7 +224,8 @@ RTCPeerConnection.prototype.createAnswer = () => Promise.reject(new Error("意�
 確認できること:
 
 - 壊した側が `error` フェーズに落ち、**発表者のPEERS一覧がその参加者を `エラー` と表示する**(= `peer_status: "error"` がHonoに届いてロスターに載った)
-- 発表者は `connecting` / `接続 1/2人` で止まる。ここから先の復帰は発表者側が `generation_failed` を送るまで進みません(上記のつまずき3)
+- 発表者は一度 `connecting` / `接続 1/2人` で止まるが、**10秒(`CONNECT_STALL_MS`)で見切って `generation_failed` を送り、壊れていない側だけで第2世代が始まる**。止まっているあいだの案内は「接続できない参加者がいます。編成を組み直しています」
+- 第2世代の `generation_start` を受け取った**壊した側は `connecting` へ飛ばず、`error` のまま**失敗の理由を出し続ける(編成の `peerIds` に自分が入っていないため)。`参加し直す` を押すと `waiting` まで戻り、次の再編成で編成に入る
 
 
 
