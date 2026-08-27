@@ -11,14 +11,24 @@ const { upgradeWebSocket, websocket } = createBunWebSocket();
 // 状態遷移を1行ずつ出す(#58)。デモ中の切り分けに使う
 const coordinator = new Coordinator((line) => console.log(line));
 
-// --- TLS(#14 開発用: mkcert) ---
+// --- TLS(#14 開発用: mkcert / #23 本番デモ用: Let's Encrypt) ---
 // 証明書があれば HTTPS、無ければ HTTP で起動(CI・クイック確認用)。
 // フロント・/ws・モデルを 1 つの HTTPS オリジンから配信する(単一オリジン)。
-// 本番デモの警告ゼロ化(飛び入り参加者向け)は別途 #23 で対応する。
-const CERT = "./certs/cert.pem";
-const KEY = "./certs/key.pem";
+//
+// パスを環境変数で差し替えられるようにしてあるのは、本番用の証明書を
+// `bun run cert`(mkcert)に上書きされないようにするため(#23)。既定のままだと
+// 会場で setup を叩いた拍子にLE証明書がmkcert産に置き換わり、全端末に警告が出る。
+//   本番: TLS_CERT=./certs/prod/cert.pem TLS_KEY=./certs/prod/key.pem bun run dev
+const CERT = process.env.TLS_CERT ?? "./certs/cert.pem";
+const KEY = process.env.TLS_KEY ?? "./certs/key.pem";
 const hasTls = existsSync(CERT) && existsSync(KEY);
 const port = Number(process.env.PORT ?? (hasTls ? 8443 : 3000));
+
+// 本番デモで参加者に配るオリジン(#23)。実在ドメイン + Let's Encrypt の証明書で
+// 警告ゼロにするための設定。設定するとQRの既定値がこれになる。
+//   例: PUBLIC_ORIGIN=https://llm.example.com:8443
+// 未設定なら従来通りLAN IPのURLだけを返す。
+const PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN;
 
 // --- 接続の生存確認(#55) ---
 // 蓋を閉じたPCやWi-Fiが切れた端末は FIN を送らないため、TCPが死ぬまで onClose が来ない。
@@ -153,7 +163,9 @@ app.get("/ws/*", (c) => c.notFound());
 // サーバが自分のNICから割り出して渡す。/ws と同じ理由で静的配信より前に置く。
 // WebSocketメッセージにしないのは、QRが接続確立より前に必要になるため(docs/frontend.md)。
 app.get("/join-info", (c) =>
-  c.json({ joinUrls: buildJoinUrls(networkInterfaces(), hasTls ? "https" : "http", port) }),
+  c.json({
+    joinUrls: buildJoinUrls(networkInterfaces(), hasTls ? "https" : "http", port, PUBLIC_ORIGIN),
+  }),
 );
 
 // --- 状態の確認(#58) ---

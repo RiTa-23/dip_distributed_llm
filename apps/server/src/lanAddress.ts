@@ -36,7 +36,45 @@ function rank(ip: string): number {
   return 2;
 }
 
-/** 参加者が開くURL(参加者画面は `/`)。候補が無ければ空配列 */
-export function buildJoinUrls(nics: NetworkInterfaces, scheme: string, port: number): string[] {
-  return pickLanAddresses(nics).map((ip) => `${scheme}://${ip}:${port}/`);
+/**
+ * 参加者が開くURLの候補。先頭が既定で、発表者画面はこれをQRに入れる。
+ *
+ * `publicOrigin`(本番デモ用の実在ドメイン。#23)を渡すとそれを先頭に置く。
+ * Let's Encrypt の証明書はドメインにしか効かないため、LAN IPのURLで開くと
+ * 警告が出てしまう。QRにはドメインが入っている必要がある。
+ *
+ * それでもLAN IPの候補を消さないのは意図的で、会場のDNSが
+ * プライベートIPへの応答を捨てる場合(DNSリバインディング保護)に、
+ * 発表者が候補を選び直して「警告は出るがつながる」状態へ退避できるようにするため。
+ * 選び直しの口は `useJoinUrl` の candidates / select が既に持っている。
+ */
+export function buildJoinUrls(
+  nics: NetworkInterfaces,
+  scheme: string,
+  port: number,
+  publicOrigin?: string,
+): string[] {
+  const lan = pickLanAddresses(nics).map((ip) => `${scheme}://${ip}:${port}/`);
+  const publicUrl = normalizePublicOrigin(publicOrigin);
+  return publicUrl === null ? lan : [publicUrl, ...lan];
+}
+
+/**
+ * 設定されたオリジンを参加URLの形(末尾 `/`)に整える。使えない値なら null。
+ *
+ * 環境変数から来るので、書き間違いをそのままQRに載せない。空文字・相対パス・
+ * http(s)以外を弾く考え方は `apps/web/src/lib/joinInfo.ts` の isHttpUrl と揃えてある。
+ */
+function normalizePublicOrigin(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  const trimmed = value.trim();
+  if (trimmed === "") return null;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    // パス・クエリ・ハッシュは参加URLには要らない。オリジンだけ取り出す
+    return `${url.origin}/`;
+  } catch {
+    return null; // URLとして読めない
+  }
 }

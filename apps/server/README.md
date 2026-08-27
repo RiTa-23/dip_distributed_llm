@@ -66,7 +66,81 @@ bun run dev
 `/join-info` は `os.networkInterfaces()` から会場LANのIPv4を割り出して返す([`src/lanAddress.ts`](src/lanAddress.ts))。ブラウザからは自分のLAN IPが分からず、`window.location.origin` をQRに入れると発表者が localhost で開いた場合に壊れるため。
 候補は `192.168.x` → `10.x` → その他の順(172.16-31 は仮想NICが混ざるため後ろ)。
 
-## 本番デモの証明書について
+## 本番デモの証明書(#23)
 
-開発は mkcert(rootCA 導入済み端末でのみ警告ゼロ)。**飛び入り参加者の警告ゼロ化は #23 で別途対応**。
-TLS 配信コードは証明書ファイルの差し替えのみで共通なので、方式選択はコードを縛らない。
+開発用の mkcert は **rootCA を入れた端末でしか信頼されない**。会場で飛び入り参加する
+他人のPCやスマホでは証明書警告が出る。これを消すために、本番デモでは
+**実在ドメイン + Let's Encrypt** を使う(issue #23 の方式A)。
+
+### しくみ
+
+1. 公開DNSに「ドメイン → 会場のLAN IP」のAレコードを置く。公開DNSがプライベートIPを
+   返すのは規格上ふつうに許されている
+2. 証明書は **DNS-01** で取る。TXTレコードを一時的に置けるかだけを見られるので、
+   **サーバが外部から到達可能である必要がない**(HTTP-01 との違い)
+3. 参加者の端末は公開DNSで名前を引き、会場LAN内のHonoに直接つながる。証明書は
+   Let's Encrypt 製なのでどの端末でも警告ゼロ
+
+ネットに出るのは名前解決だけで、モデル配布も推論のテンソルも会場LANから出ない
+(`AGENTS.md` 前提2は維持)。
+
+### 事前準備(自宅で1回だけ)
+
+証明書は**ドメインに対して**出るので、IPが変わっても取り直しは要らない。
+
+```bash
+# Cloudflare の Zone:DNS:Edit 権限のトークン
+export CF_Token="..."
+acme.sh --issue --dns dns_cf -d llm.example.com
+acme.sh --install-cert -d llm.example.com \
+  --fullchain-file "$(pwd)/certs/prod/cert.pem" \
+  --key-file       "$(pwd)/certs/prod/key.pem"
+```
+
+Aレコードは Cloudflare の管理画面で1件作っておく。**必ず「DNS only」(灰色の雲)**に
+すること。プロキシ(橙色の雲)だとCloudflareのエッジ経由になり、プライベートIPを
+返せないうえ通信も会場LANから出てしまう。
+
+### 当日の手順
+
+`docs/demo-checklist.md` に順番だけ並べてある。焦っているときはそちらを見る。
+
+```bash
+# 1. 会場Wi-Fiにつないでから、Aレコードを今のLAN IPに更新
+CF_API_TOKEN=... CF_ZONE_ID=... CF_RECORD_NAME=llm.example.com bun run dns
+
+# 2. 本番証明書と公開オリジンを指定して起動
+TLS_CERT=./certs/prod/cert.pem \
+TLS_KEY=./certs/prod/key.pem \
+PUBLIC_ORIGIN=https://llm.example.com:8443 \
+bun run dev
+```
+
+### 環境変数
+
+| 変数 | 用途 |
+|---|---|
+| `TLS_CERT` / `TLS_KEY` | 証明書のパス。既定は `./certs/{cert,key}.pem`(mkcert用) |
+| `PUBLIC_ORIGIN` | 参加者に配るオリジン。`/join-info` の先頭に入り、QRの既定値になる |
+| `CF_API_TOKEN` / `CF_ZONE_ID` / `CF_RECORD_NAME` | `bun run dns` 用 |
+
+**`TLS_CERT` / `TLS_KEY` を分けてあるのは事故防止のため。** 既定のパスのままだと、
+会場で何かの拍子に `bun run setup`(= `bun run cert`)を叩いた瞬間に本番証明書が
+mkcert産に上書きされ、全端末に警告が出る。本番用は `certs/prod/` に置いて分離する。
+
+`PUBLIC_ORIGIN` を設定しても **LAN IPのURLは候補から消えない**。会場のDNSが
+プライベートIPへの応答を捨てる場合(下記)に、発表者画面のQRを切り替えて
+退避できるようにしてある。
+
+### 会場でうまくいかないとき
+
+いちばん多い原因は **DNSリバインディング保護**。一部のルータ・リゾルバは
+「公開DNSの応答にプライベートIPが入っていたら捨てる」ため、名前解決自体ができない。
+会場のリゾルバは変えられないので、**その場では直せない**。
+
+その場合は発表者画面のQRをLAN IPの候補に切り替え、参加者に証明書警告の
+クリックスルーを案内する(issue #23 の方式C相当)。案内文は
+`docs/demo-checklist.md` に用意してある。
+
+**会場に事前に入れるなら、必ず会場Wi-Fiにつないだ端末で名前解決を試しておくこと。**
+これが通れば本番も通る。

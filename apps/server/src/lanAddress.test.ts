@@ -49,8 +49,74 @@ describe("pickLanAddresses", () => {
 });
 
 describe("buildJoinUrls", () => {
+  const nics = build({ "Wi-Fi": [nic("192.168.11.5")] });
+
   test("参加者画面のパス(/)まで含めたURLにする", () => {
-    const nics = build({ "Wi-Fi": [nic("192.168.11.5")] });
     expect(buildJoinUrls(nics, "https", 8443)).toEqual(["https://192.168.11.5:8443/"]);
+  });
+
+  describe("本番デモ用の公開オリジン(#23)", () => {
+    test("設定すると先頭に来る(QRの既定値になる)", () => {
+      expect(buildJoinUrls(nics, "https", 8443, "https://llm.example.com:8443")).toEqual([
+        "https://llm.example.com:8443/",
+        "https://192.168.11.5:8443/",
+      ]);
+    });
+
+    test("LAN IPの候補は消さない(DNSが死んだときの退避先として残す)", () => {
+      const many = build({
+        "Wi-Fi": [nic("192.168.11.5")],
+        en1: [nic("10.0.0.9")],
+      });
+      expect(buildJoinUrls(many, "https", 8443, "https://llm.example.com:8443")).toEqual([
+        "https://llm.example.com:8443/",
+        "https://192.168.11.5:8443/",
+        "https://10.0.0.9:8443/",
+      ]);
+    });
+
+    test("末尾のスラッシュが無くても付ける", () => {
+      const [first] = buildJoinUrls(nics, "https", 8443, "https://llm.example.com:8443");
+      expect(first).toBe("https://llm.example.com:8443/");
+    });
+
+    test("余計なパスやクエリは落としてオリジンだけにする", () => {
+      const [first] = buildJoinUrls(nics, "https", 8443, "https://llm.example.com:8443/foo?a=1");
+      expect(first).toBe("https://llm.example.com:8443/");
+    });
+
+    test("前後の空白は無視する", () => {
+      const [first] = buildJoinUrls(nics, "https", 8443, "  https://llm.example.com:8443  ");
+      expect(first).toBe("https://llm.example.com:8443/");
+    });
+
+    test("既定ポートなら省略された形になる", () => {
+      const [first] = buildJoinUrls(nics, "https", 8443, "https://llm.example.com");
+      expect(first).toBe("https://llm.example.com/");
+    });
+
+    describe("使えない値は黙って無視する(書き間違いをQRに載せない)", () => {
+      const cases: [string, string | undefined][] = [
+        ["未設定", undefined],
+        ["空文字", ""],
+        ["空白だけ", "   "],
+        ["スキームが無い", "llm.example.com:8443"],
+        ["相対パス", "/join"],
+        ["http(s)以外", "ftp://llm.example.com"],
+        ["URLとして壊れている", "https://"],
+      ];
+      for (const [label, value] of cases) {
+        test(label, () => {
+          expect(buildJoinUrls(nics, "https", 8443, value)).toEqual(["https://192.168.11.5:8443/"]);
+        });
+      }
+    });
+
+    test("LAN IPが1つも無くても公開オリジンだけは返す", () => {
+      const none = build({ lo: [nic("127.0.0.1", { internal: true })] });
+      expect(buildJoinUrls(none, "https", 8443, "https://llm.example.com:8443")).toEqual([
+        "https://llm.example.com:8443/",
+      ]);
+    });
   });
 });
