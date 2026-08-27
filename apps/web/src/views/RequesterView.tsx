@@ -225,7 +225,8 @@ export function RequesterView() {
   const notice = phase === "connecting" && connectStalled ? CONNECT_STALL_NOTICE : NOTICE[phase];
   // NOTICEは`active`を持たない(伝えることが無いので箱ごと消す)。読み上げ用は
   // 箱の有無に関わらず7フェーズすべてを伝えたいので、その1件だけ別に補う(#66)
-  const phaseAnnouncement = phase === "active" ? "接続済みです。プロンプトを送れます" : (notice ?? "");
+  const phaseAnnouncement =
+    phase === "active" ? "接続済みです。プロンプトを送れます" : (notice ?? "");
 
   return (
     <div className={styles.page}>
