@@ -68,23 +68,38 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
           // 人が増減しただけ。フェーズは動かさない
           return { ...s, roster: a.msg.peers };
 
-        case "generation_start":
-          // 編成し直しが済んだ。きっかけはもう表示しない
+        case "generation_start": {
+          // 編成し直しが済んだ。きっかけはもう表示しない。
+          //
+          // ただし編成に自分が入っていないpeerは connecting へ進めない。進めると
+          // 来ないofferを待って永久に止まる(スタック検知は reorganizing にしか
+          // 付いていないので逃げ道がない)。#57でHonoが status: "error" のpeerを
+          // 編成から外すようになり、#79でそのerrorを実際に送るようになったことで
+          // 到達するようになった経路(2026/8/27の実機確認で確定)
+          const excluded = s.role === "peer" && !a.msg.peerIds.includes(s.myId);
           return {
             ...s,
             generation: a.msg.generation,
-            phase: "connecting",
+            // errorのpeerは error のまま残す。waiting に戻すと失敗の理由が画面から消える
+            phase: excluded ? (s.phase === "error" ? "error" : "waiting") : "connecting",
             abortReason: null,
+            // 編成外でも持つ。層バー(#81)は「今動いている編成」を出すものなので、
+            // 自分がそこに入っているかとは別の話
             generationPeerIds: a.msg.peerIds,
             abortMessage: null,
           };
+        }
 
         case "generation_aborted":
           // 古い世代の通知が遅れて届くことがある。捨てないと正常な編成が巻き込まれる
           if (a.msg.generation < s.generation) return s;
           return {
             ...s,
-            phase: "reorganizing",
+            // 失敗して止まっている画面は、再編成中に見せない(2026/8/27の実機確認)。
+            // Honoはこの端末を status: "error" として編成から外したままなので
+            // (#57)、「メンバーが変わりました。まもなく再開します」は嘘になる。
+            // 戻る道は「参加し直す」だけで、それは error の画面にしか出ない
+            phase: s.phase === "error" ? "error" : "reorganizing",
             abortReason: a.msg.reason,
             abortMessage: a.msg.message,
           };
