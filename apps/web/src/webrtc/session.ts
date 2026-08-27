@@ -1,4 +1,6 @@
 import type { WebrtcSignalMessage } from "@dip_distributed_llm/shared-types/messages";
+import { TURN_ENV } from "../config";
+import { buildIceConfig, describeIceConfig, selectIceRoute } from "./iceConfig";
 
 // requester⇔peer のWebRTC接続を組み立てる部分の共通部品。
 // Reactに依存させていないのは、世代の判定とcandidateの順番待ちを
@@ -10,9 +12,90 @@ export type SignalSender = (msg: WebrtcSignalMessage) => void;
 /** RTCPeerConnectionの生成。テストで偽物に差し替えるために外から渡せるようにしている */
 export type PeerConnectionFactory = () => RTCPeerConnection;
 
-/** 会場LAN内で完結するのでSTUN/TURNは要らない(AGENTS.md 前提6) */
-export const defaultPeerConnectionFactory: PeerConnectionFactory = () =>
-  new RTCPeerConnection({ iceServers: [] });
+/** コンストラクタ本体。配線のテストで偽物を挿すために型として開けてある */
+export type PeerConnectionCtor = new (config?: RTCConfiguration) => RTCPeerConnection;
+
+/**
+ * 組み上がった `RTCConfiguration` を実際にコンストラクタへ渡す部分。
+ *
+ * envの読み取り(`config.ts`)と設定の解釈(`iceConfig.ts`)から**配線だけを切り離す**。
+ * bun testではenvが空なので、実物の `defaultPeerConnectionFactory` を見ても
+ * 「TURNの設定がコンストラクタまで届くか」は確かめられない。ここを関数にしておくと、
+ * TURN入りのconfigと偽コンストラクタを渡して**配線そのもの**を固定できる。
+ */
+export function createPeerConnectionFactory(
+  config: RTCConfiguration,
+  Ctor?: PeerConnectionCtor,
+): PeerConnectionFactory {
+  // 既定のコンストラクタは**呼ばれたときに**引く。既定引数で受けると、この
+  // モジュールを読み込んだ時点で `RTCPeerConnection` を触ることになり、
+  // WebRTCの無いbun testでは読み込みそのものが落ちる
+  return () => new (Ctor ?? RTCPeerConnection)(config);
+}
+
+/**
+ * 既定の生成器。
+ *
+ * TURNが未設定なら `iceServers: []` で、これまでどおり会場LAN内のdirectだけを使う。
+ * 設定されていれば**会場LAN内のTURN**を足す。外部のSTUN/TURNサービスは使わない
+ * (AGENTS.md 前提6)。directを優先するかrelayへ回すかはICEに選ばせる(前提2)。
+ *
+ * **設定が中途半端ならこのモジュールの評価時に落ちる。** `VITE_*` はビルド時に
+ * 埋め込まれるので、設定ミスはデプロイ不良であって実行時の障害ではない。黙って
+ * TURN無効へ倒すと「効いているつもりで効いていない」まま実機検証してしまう。
+ */
+const ICE_CONFIG: RTCConfiguration = buildIceConfig(TURN_ENV);
+
+export const defaultPeerConnectionFactory: PeerConnectionFactory =
+  createPeerConnectionFactory(ICE_CONFIG);
+
+/**
+ * 経路の診断を付ける。**参加者の操作は増やさない** — 開発者がコンソールで追えるだけ。
+ * 後始末の関数を返すので、接続を畳むときに呼ぶこと。
+ *
+ * `addEventListener` を使うのは、両セッションが既に持っている `onicecandidate` /
+ * `onconnectionstatechange` のプロパティハンドラを奪わないため。
+ */
+export function attachIceDiagnostics(pc: RTCPeerConnection): () => void {
+  // 偽のPeerConnectionを挿しているテストでは何もしない
+  if (typeof pc.addEventListener !== "function") return () => {};
+
+  const onCandidateError = (event: Event) => {
+    const e = event as RTCPeerConnectionIceErrorEvent;
+    // credentialは出さない。どのTURNがどう断ったかだけ
+    console.warn("[webrtc] ICE server error", {
+      url: e.url,
+      errorCode: e.errorCode,
+      errorText: e.errorText,
+    });
+  };
+
+  let reported = false;
+  const onStateChange = () => {
+    if (reported || pc.connectionState !== "connected") return;
+    reported = true;
+    void pc
+      .getStats()
+      .then((stats) => {
+        const route = selectIceRoute(stats);
+        if (route) console.info("[webrtc] selected ICE route", route);
+      })
+      // 畳んでいる最中のPeerConnectionでは普通に失敗する。診断が取れないこと自体は
+      // 障害ではないので、unhandled rejectionにせず捨てる
+      .catch(() => {});
+  };
+
+  pc.addEventListener("icecandidateerror", onCandidateError);
+  pc.addEventListener("connectionstatechange", onStateChange);
+
+  return () => {
+    pc.removeEventListener("icecandidateerror", onCandidateError);
+    pc.removeEventListener("connectionstatechange", onStateChange);
+  };
+}
+
+/** 起動時に1回、どのICE設定で繋ごうとしているかを残す。credentialは含まない */
+console.info(`[webrtc] ICE: ${describeIceConfig(ICE_CONFIG)}`);
 
 /**
  * セッションから上がってくる通知。第1引数はどれも「接続を張り始めた世代」で、

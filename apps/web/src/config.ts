@@ -1,5 +1,7 @@
 /** 両画面が使う定数。散らばらないようここ1か所に置く。 */
 
+import type { IceEnv } from "./webrtc/iceConfig";
+
 /** Honoの制御プレーン。ステップ3で useHonoSocket が使う */
 export const WS_PATH = "/ws";
 
@@ -84,3 +86,25 @@ export const FAKE_METRICS: boolean = import.meta.env.VITE_FAKE_METRICS === "1";
  * DataChannelを流れる(AGENTS.md 前提2)。
  */
 export const WASM_MODULE_URL = "/wasm/llmlet-runtime.js";
+
+/**
+ * TURNの生env。**ここは集めるだけ**で、解釈は `webrtc/iceConfig.ts` が行う。
+ *
+ * 会場LAN内のcoturnを指す想定(AGENTS.md 前提6: 外部のクラウドサービスは使わない)。
+ * 3つとも空なら従来どおりTURN無効で、参加者側の操作は何も増えない。
+ * 設定例は `apps/web/.env.example`。**実際のcredentialはコミットしない。**
+ *
+ *   VITE_TURN_URLS=turn:192.168.1.146:3478?transport=udp,turn:192.168.1.146:3478?transport=tcp
+ *   VITE_TURN_USERNAME=dip
+ *   VITE_TURN_CREDENTIAL=... (ローカルのみ)
+ *   VITE_FORCE_RELAY=0
+ *
+ * `VITE_FORCE_RELAY=1` は**検証専用**。relayを強制して中継経路だけを試すためのもので、
+ * 本番では必ず `all`(ICEにhost/relayを選ばせる)。
+ */
+export const TURN_ENV: IceEnv = {
+  urls: import.meta.env.VITE_TURN_URLS,
+  username: import.meta.env.VITE_TURN_USERNAME,
+  credential: import.meta.env.VITE_TURN_CREDENTIAL,
+  forceRelay: import.meta.env.VITE_FORCE_RELAY,
+};

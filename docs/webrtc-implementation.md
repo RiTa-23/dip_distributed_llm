@@ -133,9 +133,16 @@ peer側`useHonoSocket`の`lastMessage`が`webrtc_signal`で`payload.kind`が`off
 
 ## LAN限定であることの影響
 
-- `iceServers: []`でよい(STUN/TURN不要)
-- ICEはhost candidate(ローカルIP直接)のみで同一LAN内疎通
-- 会場Wi-FiのAP isolation設定を事前確認(有効だと同一LAN内でも端末間通信不可、WebRTC接続不可)
+- 外部のSTUN/TURNサービスは使わない(AGENTS.md 前提6)
+- ~~`iceServers: []`でよい(STUN/TURN不要)~~ → **host candidateだけでは足りないLANが実在した。**
+  物理2PC・標準Chromeの実測で、SDPとhost candidateの交換まで通ったのに ICE が
+  `checking → disconnected`、DTLS が `new` のまま止まった。**言えるのはここまでで、原因は未確定**
+  (mDNSは類似の前例があるが、この件の原因としては確定していない)
+- そのため**会場LAN内のTURN**へfallbackできるようにした。`iceTransportPolicy` は既定 `all` で、
+  direct(host)とrelayの選択はICEに任せる。設定は `apps/web/.env.example` と
+  `apps/web/src/webrtc/iceConfig.ts`。**3項目とも未設定なら従来どおり `iceServers: []`**
+- 会場Wi-FiのAP isolation設定を事前確認(有効だと同一LAN内でも端末間通信不可)。
+  TURNがあれば中継で通せる見込みだが、**未実測**
 
 ## 世代変更時の接続管理
 

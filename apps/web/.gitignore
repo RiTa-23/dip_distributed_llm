@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# env。TURNのcredentialが入るので、雛形以外は追跡しない
+.env
+.env.*
+!.env.example

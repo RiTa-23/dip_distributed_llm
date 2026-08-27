@@ -1,7 +1,15 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { WebrtcSignalMessage } from "@dip_distributed_llm/shared-types/messages";
-import { createCandidateQueue, isStaleAbort, isStaleForCurrent, toCandidateInit } from "./session";
+import {
+  attachIceDiagnostics,
+  createCandidateQueue,
+  createPeerConnectionFactory,
+  isStaleAbort,
+  isStaleForCurrent,
+  toCandidateInit,
+} from "./session";
 import type { SessionCallbacks } from "./session";
+import { buildIceConfig } from "./iceConfig";
 import { createPeerSession } from "./peerSession";
 import { createRequesterSession } from "./requesterSession";
 
@@ -716,5 +724,174 @@ describe("createRequesterSession", () => {
     // ここで上げると、正常な再編成のたびに generation_failed を送って abort ループになる
     expect(r.failed).toEqual([]);
     expect(r.order).toEqual([]);
+  });
+});
+
+// --- ICEの配線 ---------------------------------------------------------------
+//
+// `iceConfig.test.ts` が見ているのは「envからRTCConfigurationを組む」ところまで。
+// **組んだconfigがコンストラクタまで届くか**は別の話で、そこが切れていても
+// iceConfigのテストは全部通ってしまう。bun testではenvが空なので実物の
+// `defaultPeerConnectionFactory` からは確かめられない。そこで配線だけを切り出して、
+// TURN入りのconfigと偽コンストラクタで固定する。
+
+type CtorCall = { config?: RTCConfiguration };
+
+function fakeCtor() {
+  const calls: CtorCall[] = [];
+  class FakePeerConnection {
+    constructor(config?: RTCConfiguration) {
+      calls.push({ config });
+    }
+  }
+  return { calls, Ctor: FakePeerConnection as unknown as typeof RTCPeerConnection };
+}
+
+const TURN_ENV_FULL = {
+  urls: "turn:192.168.1.146:3478?transport=udp,turn:192.168.1.146:3478?transport=tcp",
+  username: "dip",
+  credential: "s3cr3t-must-not-leak",
+};
+
+describe("createPeerConnectionFactory", () => {
+  test("組んだTURN設定がそのままコンストラクタへ渡る", () => {
+    const { calls, Ctor } = fakeCtor();
+    const factory = createPeerConnectionFactory(buildIceConfig(TURN_ENV_FULL), Ctor);
+
+    const pc = factory();
+
+    expect(calls).toHaveLength(1);
+    const config = calls[0]?.config;
+    expect(config?.iceServers).toEqual([
+      {
+        urls: ["turn:192.168.1.146:3478?transport=udp", "turn:192.168.1.146:3478?transport=tcp"],
+        username: "dip",
+        credential: "s3cr3t-must-not-leak",
+      },
+    ]);
+    // 既定は all。ICEにhost/relayを選ばせる
+    expect(config?.iceTransportPolicy).toBe("all");
+    expect(pc).toBeInstanceOf(Ctor);
+  });
+
+  test("forceRelay の policy もコンストラクタまで届く", () => {
+    const { calls, Ctor } = fakeCtor();
+    createPeerConnectionFactory(buildIceConfig({ ...TURN_ENV_FULL, forceRelay: "1" }), Ctor)();
+
+    expect(calls[0]?.config?.iceTransportPolicy).toBe("relay");
+  });
+
+  test("TURN未設定なら空のiceServersが渡る(従来どおり)", () => {
+    const { calls, Ctor } = fakeCtor();
+    createPeerConnectionFactory(buildIceConfig({}), Ctor)();
+
+    expect(calls[0]?.config?.iceServers).toEqual([]);
+    expect(calls[0]?.config?.iceTransportPolicy).toBe("all");
+  });
+
+  test("呼ぶたびに新しいPeerConnectionを作る(世代ごとに使い回さない)", () => {
+    const { calls, Ctor } = fakeCtor();
+    const factory = createPeerConnectionFactory(buildIceConfig({}), Ctor);
+
+    expect(factory()).not.toBe(factory());
+    expect(calls).toHaveLength(2);
+  });
+});
+
+type FakeDiagPc = {
+  connectionState: RTCPeerConnectionState;
+  listeners: Map<string, () => void>;
+  removed: string[];
+  addEventListener: (type: string, fn: () => void) => void;
+  removeEventListener: (type: string, fn: () => void) => void;
+  getStats: () => Promise<Map<string, unknown>>;
+};
+
+function fakeDiagPc(getStats: () => Promise<Map<string, unknown>>): FakeDiagPc {
+  const pc: FakeDiagPc = {
+    connectionState: "new",
+    listeners: new Map(),
+    removed: [],
+    addEventListener: (type, fn) => {
+      pc.listeners.set(type, fn);
+    },
+    removeEventListener: (type) => {
+      pc.removed.push(type);
+    },
+    getStats,
+  };
+  return pc;
+}
+
+const relayStats = () =>
+  new Map<string, unknown>([
+    ["T1", { type: "transport", selectedCandidatePairId: "P1" }],
+    [
+      "P1",
+      { type: "candidate-pair", localCandidateId: "L1", remoteCandidateId: "R1", selected: true },
+    ],
+    ["L1", { type: "local-candidate", candidateType: "relay", protocol: "udp" }],
+    ["R1", { type: "remote-candidate", candidateType: "relay", protocol: "udp" }],
+  ]);
+
+describe("attachIceDiagnostics", () => {
+  test("addEventListener を持たない偽PeerConnectionでも落ちない", () => {
+    // 既存のセッションテストは受け口だけ備えた偽物を挿している。診断で落としてはいけない
+    const detach = attachIceDiagnostics({} as unknown as RTCPeerConnection);
+    expect(() => detach()).not.toThrow();
+  });
+
+  test("後始末で両方のリスナを外す", () => {
+    const pc = fakeDiagPc(async () => relayStats());
+    const detach = attachIceDiagnostics(pc as unknown as RTCPeerConnection);
+
+    expect([...pc.listeners.keys()].sort()).toEqual(["connectionstatechange", "icecandidateerror"]);
+
+    detach();
+
+    expect(pc.removed.sort()).toEqual(["connectionstatechange", "icecandidateerror"]);
+  });
+
+  test("connected になった1回だけ経路を出す", async () => {
+    const info = spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const pc = fakeDiagPc(async () => relayStats());
+      attachIceDiagnostics(pc as unknown as RTCPeerConnection);
+      const onState = pc.listeners.get("connectionstatechange");
+
+      // connected 以外では読まない
+      pc.connectionState = "connecting";
+      onState?.();
+      pc.connectionState = "connected";
+      onState?.();
+      onState?.();
+      await flush();
+
+      const routeLogs = info.mock.calls.filter((c) => String(c[0]).includes("selected ICE route"));
+      expect(routeLogs).toHaveLength(1);
+      expect(routeLogs[0]?.[1]).toEqual({
+        localType: "relay",
+        remoteType: "relay",
+        protocol: "udp",
+      });
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  test("getStats が失敗しても投げない(畳んでいる最中は普通に失敗する)", async () => {
+    let called = 0;
+    const pc = fakeDiagPc(() => {
+      called += 1;
+      return Promise.reject(new Error("closed"));
+    });
+    attachIceDiagnostics(pc as unknown as RTCPeerConnection);
+
+    pc.connectionState = "connected";
+    expect(() => pc.listeners.get("connectionstatechange")?.()).not.toThrow();
+    await flush();
+
+    // 握らないと unhandled rejection になる
+    expect(called).toBe(1);
   });
 });

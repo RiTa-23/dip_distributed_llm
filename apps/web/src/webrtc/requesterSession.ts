@@ -2,6 +2,7 @@ import type { WebrtcSignalMessage } from "@dip_distributed_llm/shared-types/mess
 import {
   bindChannel,
   createCandidateQueue,
+  attachIceDiagnostics,
   defaultPeerConnectionFactory,
   describeError,
   toCandidateInit,
@@ -15,6 +16,8 @@ type Connection = {
   channel: RTCDataChannel;
   candidates: CandidateQueue;
   open: boolean;
+  /** 経路ログの後始末。畳むときに呼ぶ */
+  detachDiagnostics: () => void;
 };
 
 /**
@@ -44,6 +47,7 @@ export function createRequesterSession({
    */
   const shutdownConnections = () => {
     for (const entry of connections.values()) {
+      entry.detachDiagnostics();
       unbindChannel(entry.channel);
       entry.channel.close();
       unbindConnection(entry.pc);
@@ -104,6 +108,7 @@ export function createRequesterSession({
           .catch((e: unknown) => fatalFail(peerId, describeError(e)));
       }),
       open: false,
+      detachDiagnostics: attachIceDiagnostics(pc),
     };
     connections.set(peerId, entry);
 

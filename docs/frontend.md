@@ -348,7 +348,15 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 
 ### まだ無いもの
 
-- **TURNは持ちません。** 会場のAPアイソレーションが有効だとP2Pが成立しません(`docs/webrtc-implementation.md`)。ローカル検証では踏みません
+- **会場LAN内のTURNへfallbackできます(既定は無効)。** 物理2PC・標準Chrome・`iceServers: []` の実測で、secure context / SDP / host candidate 交換まで通ったのに ICE が `checking → disconnected`、DTLS が `new` のままで止まりました。**証明できているのは「host candidate による direct path が成立しないLANがある」ところまで**で、原因は未確定です。そのため原因究明ではなく迂回路を用意しました
+  - 設定は `VITE_TURN_URLS` / `VITE_TURN_USERNAME` / `VITE_TURN_CREDENTIAL` の3点セット(`apps/web/.env.example`)。**3つとも空なら従来どおりTURN無効**で、参加者の操作は何も増えません(URLを開く → 参加する、のまま)
+  - 一部だけ設定すると**起動時に設定エラーで落ちます**。黙ってTURN無効へ倒すと「入れたつもりで効いていない」まま実機検証して結果を誤読するためです
+  - 既定の `iceTransportPolicy` は `all`。**direct を優先するか relay へ回すかはICEに選ばせます** — 「direct → timeout → 張り直し → TURN」のような手書きのfallback state machineは持ちません
+  - `VITE_FORCE_RELAY=1` は**検証専用**で、relay経路だけを試すためのものです。本番では使いません
+  - 実装は [`webrtc/iceConfig.ts`](../apps/web/src/webrtc/iceConfig.ts)(純粋)と `webrtc/session.ts` の `createPeerConnectionFactory`。requester/peer のどちらにもTURN固有の分岐はありません
+  - 開発者向けに `icecandidateerror` と、繋がった後の selected candidate pair を1回だけコンソールへ出します(`attachIceDiagnostics`)。**credentialもIPも出しません**
+  - **まだ実機で通していません。** 同一PCの forced relay も物理2PCも未実施です
+- 会場のAPアイソレーションが有効な場合、TURNがあれば中継で通せる見込みですが、これも未実測です(`docs/webrtc-implementation.md`)
 - **WebRTCの失敗で `peer_status: "error"` を送るようになりました(#79)。** 以前はサーバの「全員ready」が崩れて次の世代が始まらず、1人の失敗で全体が止まるため送っていませんでしたが、#57でHonoが `status: "error"` のpeerを編成から外すようになったため解消しました。復帰時の `ready` 送り直しは、離脱→再参加で `useWasmEngine` の `onReady` が通る既存の経路に乗っています
 - **WASM本体がありません。** `peerManager.ts` は両画面に繋ぎ込み済みで、DataChannelが開けば `attach` まで走ります。差し込む起動処理も入りました(上の「①のWASMを起動する」)が、差し込む相手(`llmlet-mod.js` / `.wasm`)が①からまだ来ていないため、既定ではダミー経路を通ります
   - **RPCのバイト列そのものは、WASMの代役スタブで流して確認済みです**(2026/8/25、#44)。実物のDataChannelで16MiBの往復がバイト一致で通っています。開発中は参加者のタブで `__rpc.serve()`、発表者のタブで `await __rpc.check()` で試せます(`docs/webrtc-implementation.md` の「WASMの代役スタブで確認したこと」)
