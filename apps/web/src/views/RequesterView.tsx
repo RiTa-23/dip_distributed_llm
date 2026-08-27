@@ -34,6 +34,7 @@ const PEER_STATUS_LABEL: Record<string, string> = {
   error: "エラー",
 };
 
+/** 発表者側のチャットUIと、参加者の接続・再編成状態を表示する。 */
 export function RequesterView() {
   const { state, dispatch, send, lastMessage, assignments, debug } = useCluster({ enabled: true });
   const [modelProgress, setModelProgress] = useState(0);
@@ -150,17 +151,18 @@ export function RequesterView() {
   }, [state.roster.length]);
 
   useEffect(() => {
-    if (!lastMessage) return;
-    const message =
-      lastMessage.type === "generation_start"
-        ? "編成が完了しました"
-        : lastMessage.type === "generation_aborted"
-          ? lastMessage.message
-          : null;
+    const message = state.abortMessage;
     if (!message) return;
 
     if (toastTimer.current) clearTimeout(toastTimer.current);
     setToast(message);
+    toastTimer.current = window.setTimeout(() => setToast(null), 3200);
+  }, [state.abortMessage]);
+
+  useEffect(() => {
+    if (!lastMessage || lastMessage.type !== "generation_start") return;
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast("編成が完了しました");
     toastTimer.current = window.setTimeout(() => setToast(null), 3200);
   }, [lastMessage]);
 

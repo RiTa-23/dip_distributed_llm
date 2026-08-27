@@ -19,6 +19,7 @@ export type ClusterAction =
   /** 開発用パネル専用。任意のフェーズへ飛ばす */
   | { type: "dev_set_phase"; phase: Phase };
 
+/** サーバー通知とブラウザ内イベントから参加者・発表者の状態を更新する。 */
 export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState {
   switch (a.type) {
     case "socket_opened":
@@ -33,6 +34,7 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
         generation: 0,
         abortReason: null,
         generationPeerIds: [],
+        abortMessage: null,
       };
 
     case "local_ready":
@@ -54,6 +56,7 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
         errorMessage: null,
         abortReason: null,
         generationPeerIds: [],
+        abortMessage: null,
       };
 
     case "dev_set_phase":
@@ -73,13 +76,18 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
             phase: "connecting",
             abortReason: null,
             generationPeerIds: a.msg.peerIds,
+            abortMessage: null,
           };
 
         case "generation_aborted":
           // 古い世代の通知が遅れて届くことがある。捨てないと正常な編成が巻き込まれる
           if (a.msg.generation < s.generation) return s;
-          // reason は画面の文言の出し分けにだけ使う。判断はしない
-          return { ...s, phase: "reorganizing", abortReason: a.msg.reason };
+          return {
+            ...s,
+            phase: "reorganizing",
+            abortReason: a.msg.reason,
+            abortMessage: a.msg.message,
+          };
 
         case "webrtc_signal":
           // 接続手続きのメッセージ。フェーズには関係しない
