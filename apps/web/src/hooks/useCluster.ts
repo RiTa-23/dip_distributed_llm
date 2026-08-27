@@ -46,9 +46,17 @@ export function useCluster(options: { enabled: boolean }): Cluster {
 
   // 層バーは現在の編成(generation_startのpeerIds)に入っているpeerだけを対象にする。
   // rosterには status: "error" のpeerも残るため、そのままでは誰も計算していない
-  // 層が「担当」として表示されてしまう(#81)。ロスター一覧の表示自体は変えない
+  // 層が「担当」として表示されてしまう(#81)。ロスター一覧の表示自体は変えない。
+  // generationPeerIdsが空(まだ一度もgeneration_startを受けていない)なら、
+  // idle/preparing/waitingの間ずっと「参加者がいません」になってしまうため
+  // ロスター全体にフォールバックする。これは「これから参加している人たちで
+  // 分けるとこうなる」という仮表示で、#81が問題にしている「編成が存在するのに
+  // 編成外のpeerが混ざる」ケースとは衝突しない
   const generationPeers = useMemo(
-    () => state.roster.filter((p) => state.generationPeerIds.includes(p.clientId)),
+    () =>
+      state.generationPeerIds.length === 0
+        ? state.roster
+        : state.roster.filter((p) => state.generationPeerIds.includes(p.clientId)),
     [state.roster, state.generationPeerIds],
   );
 
