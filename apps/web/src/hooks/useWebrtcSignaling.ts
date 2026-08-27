@@ -44,7 +44,12 @@ export type WebrtcSignalingOptions = {
   onClose?: (remoteId: string) => void;
   /** 世代の切り替え・離脱で全部畳んだ。PeerManager の close へ繋ぐ */
   onReset?: () => void;
-  onFailed?: (message: string) => void;
+  /**
+   * 現行世代の接続が致命的に失敗した。requester はここで `generation_failed` を送る。
+   * **失敗した世代そのものを渡す** — 画面が持つ `state.generation`(clusterReducer側)は
+   * セッションの世代とズレうるので、送信側に読ませない。
+   */
+  onFailed?: (generation: number, message: string) => void;
 };
 
 const EMPTY: WebrtcSignaling = {
@@ -169,7 +174,7 @@ export function useWebrtcSignaling(options: WebrtcSignalingOptions): WebrtcSigna
         onFailed: (g, _remoteId, message) => {
           if (isStaleForCurrent(g, generationRef.current)) return;
           failedRef.current = true;
-          onFailedRef.current?.(message);
+          onFailedRef.current?.(g, message);
           sync();
         },
         onChange: sync,

@@ -83,6 +83,39 @@ idle ─→ preparing ─→ waiting ─→ connecting ─→ active
 
 発表者側は `generation_failed` を送るようになりました(#78)。WebRTC接続に失敗すると `RequesterView` の `onFailed` から送信し、Honoが `generation_aborted`(`connection_failed`)で編成を組み直します。参加者側の「時間で気づく」しくみ(上記)は、requesterが失敗以外の理由で無言のまま止まった場合の保険として残っています。
 
+#### 発表者の「世代の致命傷」は1本道にまとめてあります
+
+以前は `pc.connectionState === "failed"` のときだけ `generation_failed` を送っていました。DataChannel が閉じただけのとき(peer の WebSocket は生きたまま回線だけ落ちた等)は送られず、Hono は `phase: active` のまま固まって発表者は永久に `connecting` のままでした。
+
+現在は `webrtc/requesterSession.ts` の `fatalFail()` が唯一の入口です。RPC device は Runtime 起動時の `-rpc` 引数で固定されるため、**理由を問わず1本失った時点でその世代は続行不能**です。したがって次のすべてが同じ道を通ります。
+
+- 予期しない DataChannel の close
+- `pc.connectionState === "failed"`
+- offer / answer の SDP 生成・適用の失敗
+- `addIceCandidate` の失敗
+
+通る順序が契約で、B-2 の ownership の原則(**所有権を手放してから壊す**)を物理回線まで含めて守ります。
+
+1. `disposed = true` … セッションを**論理** terminal にする
+2. `onClose` … `usePeerManager` の fence(世代トークンの失効)→ 旧 manager の退役
+3. `shutdownConnections()` … **そのあとで** DataChannel / RTCPeerConnection を閉じる
+4. `onFailed` … 画面の初期化(drain)と `generation_failed` の送信
+
+**2 を 3 より先に置くのが要点です。** 物理回線を先に閉じると、まだ owner token が current で manager も現行のままの瞬間に相手側の回線が消えます。`stop()` は termination proof にならず旧 Runtime は pthread 側で並行に動きうるので、その瞬間の send / recv 失敗が現行世代へ流れ込む余地が残ります。1 で論理的に閉じてあれば、この窓は開きません。
+
+**2 を 4 より先に置く**のは、畳む前の旧 Runtime が現行の持ち主のまま画面に触れないようにするためです。
+
+1 が通知より先にあることで、「1セッションにつき1回だけ」も同時に成立します。別途フラグを持たないのは、`disposed` と二重の門になって片方がテストで固定できない飾りになるためです。
+
+論理 terminal 化が要るのは、単に「もう失敗した」と印を付けるだけではセッションの受け口が生きたまま残るからです。呼び出し側の世代番号(`useWebrtcSignaling` の `generationRef`)は次の `generation_start` まで動かないので `isStaleForCurrent` は素通しし、**2 で作り直したばかりの新しい PeerManager へ、死んだ世代の回線が attach されてしまいます**(遅れて開く DataChannel、遅れて届く RPC 応答、遅れて成立する signaling)。
+
+4の drain は進行中の生成の後始末には任せられません。2でトークンが失効しているため、旧 run の `.finally` は正しく「何もしない」からです。世代番号は変わらないので描画中の初期化も走らず、ここが唯一の初期化の口になります。ここを通さないと `generating` が立ったままになり、`requester_accepting: false` を送ったきりで Hono が新規peerを永久に取り込めなくなります。
+
+**参加者側では同じ昇格をしません。** 正常な世代交代では「WSの `generation_aborted`」と「発表者の teardown 由来の remote close」が競合します。close が先着した参加者が自分を `peer_status: "error"` にすると、Hono は `error` の peer を編成から外すため**次の世代が組めなくなります**。参加者の close は従来どおり相手ごとの detach 通知のままです。
+
+⚠️ **既知の限界(今回のスコープ外)**: WebSocket が生きたまま DataChannel だけ死に、peer が `ready` のままの場合、Hono は編成を `idle` に戻しますが**顔ぶれが同じなので次の世代を始めません**(`failedPeerIds` / `resetSinceStart`、#56)。peer の切断・`error`・入り直しのいずれかが要ります。参加者画面の「参加し直す」導線(#63)が回復路です。自動復旧させるには `generation_failed` に peerId を載せて失敗した相手だけ次の編成から外す必要があり、Hono と `shared-types` の変更を伴います。
+
+
 ### 発表者だけ、もう1本のトラックが並行する
 
 モデル(GGUF)のダウンロードは数GBあるので、編成の進行とは**独立して**画面を開いた瞬間から走ります。

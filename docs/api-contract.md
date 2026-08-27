@@ -72,6 +72,8 @@ SDP/ICE candidateをHono経由で相手に転送。requester→peer、peer→req
 - これが無いと、`active`から`idle`へ戻る道が「誰かの切断」しか無く、requesterが1人でも接続に失敗した時点で**次の世代が永久に始まらない**
 - **同じ顔ぶれでの即時リトライはしない。** 失敗した編成のpeerIdを覚えておき、次に組める顔ぶれがそれと同一なら`generation_start`を出さない。同じ組み合わせを繰り返し失敗しながら通知を撒き続けるのを防ぐため。誰かが増減するか、peerの`status`が変わって顔ぶれが変われば再開する
 - したがって、接続に失敗したpeerは`peer_status: "error"`を送ることが望ましい(下記「世代開始の条件」を参照)
+- **クライアント側も1世代につき1回しか送らない。** requesterは予期しないDataChannelのclose・`connectionState: "failed"`・SDP/ICEの失敗をすべて同じ経路(`webrtc/requesterSession.ts`の`fatalFail()`)へ通し、最初の1回でそのセッションを閉じる。Hono側の検証(世代一致・`phase`)と二重になるが、送る側でも絞ってあるほうが世代交代の最中に古い世代ぶんが飛ぶ余地が小さい
+- ⚠️ **WebSocketが生きたままDataChannelだけが死んだ場合、これだけでは次の世代が始まらない。** `phase`は`idle`へ戻るが顔ぶれが変わっていないため、上記「同じ顔ぶれでの即時リトライはしない」に当たる。peerの切断・`error`・入り直しのいずれかが要る
 
 ## 世代開始の条件
 

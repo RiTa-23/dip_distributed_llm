@@ -7,7 +7,10 @@ import { JoinQr } from "../components/JoinQr";
 import { useCluster } from "../hooks/useCluster";
 import { useWebrtcSignaling } from "../hooks/useWebrtcSignaling";
 import { usePeerManager } from "../hooks/usePeerManager";
-import { useRequesterRuntime } from "../hooks/useRequesterRuntime";
+import { GenerationSupersededError, useRequesterRuntime } from "../hooks/useRequesterRuntime";
+import { createGenerationOwner } from "../webrtc/generationOwner";
+import type { GenerationToken } from "../webrtc/generationOwner";
+import { createAcceptingSignal } from "../hooks/requesterAccepting";
 import { getClientId } from "../lib/clientId";
 import { MODEL_NAME, TOTAL_LAYERS } from "../config";
 import type { Phase } from "../types/cluster";
@@ -35,6 +38,15 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * 1回の生成ぶんの受け皿。**開けた世代のトークンごと**持つ。
+ *
+ * Runtimeの `onText` には起動時のstdoutも同じ口で流れてくるので、generateを呼んだ
+ * 前後で区切る必要がある。そのうえで世代のトークンも一緒に持たせておくと、世代が
+ * 替わった時点でこの窓は自動的に無効になり、明示的に閉じて回る必要がなくなる。
+ */
+type GenerationWindow = { token: GenerationToken; text: string };
+
 export function RequesterView() {
   const { state, dispatch, send, lastMessage, assignments, debug } = useCluster({ enabled: true });
   const [chat, setChat] = useState<ChatEntry[]>([]);
@@ -48,12 +60,29 @@ export function RequesterView() {
   // generateを呼んだ前後で区切って、そのあいだに来たぶんだけを回答として扱う。
   // stateではなくrefなのは、onTextが再描画と無関係に高頻度で呼ばれるのと、
   // stateだとクロージャが古い値を掴むため
-  const generationActiveRef = useRef(false);
-  const generationTextRef = useRef("");
+  const windowRef = useRef<GenerationWindow | null>(null);
   const previousRosterSize = useRef(state.roster.length);
-  const previousGenerating = useRef(generating);
+  // `requester_accepting` の送り直しを決める edge 検出。**描画をまたいで1つ**でないと
+  // 毎描画で初期値に戻り、edge として機能しない(`hooks/requesterAccepting.ts`)
+  const [acceptingSignal] = useState(() => createAcceptingSignal());
   const [toast, setToast] = useState<string | null>(null);
   const [myId] = useState(() => getClientId("requester"));
+
+  /**
+   * 生成まわりを初期化する。呼ぶのは3か所:
+   *   - 世代交代(描画中にそろえる)
+   *   - **現行世代の致命的な失敗**(`onFailed` の drain)。世代番号が変わらないので、
+   *     こちらを通さないと `generating` が立ったまま残る
+   *   - 1回の生成が正常に終わったとき(`run()` の finally)
+   *
+   * 旧 run の `.finally` には任せない。旧 run は持ち主でなくなっているため画面に
+   * 触れず(触れないのが正しい)、初期化は現行世代の側でやりきる必要がある。
+   */
+  const resetGenerationState = () => {
+    setStreaming("");
+    setGenerating(false);
+    setComputingIndex(null);
+  };
 
   const { phase } = state;
 
@@ -61,7 +90,18 @@ export function RequesterView() {
   // ①のWASMが起動すると `Module.PeerManager = rpc.manager` が差し込まれる。
   // `onGenerationEvent`(UI用のスタブ)は繋がない。実生成の唯一の経路は
   // Runtime adapterの `onText` で、スタブが混ざると判定にならない
+  // 世代の持ち主は**この画面に1つだけ**。Runtimeを立てる側(`useRequesterRuntime`)が
+  // claim し、データプレーンを壊す側(`usePeerManager` の `retireCurrent`)が
+  // close/detach の**前**に release する。片方だけが持つと、`close()` で起こされた
+  // 旧Runtimeの失敗がまだ有効なトークンを素通りして、正常な再編成がエラーになる
+  const [owner] = useState(createGenerationOwner);
+
+  // **世代ごとに実体を作り直す**(`isolateGenerations`)。requesterのRuntimeは世代ごとに
+  // 立て直すが、`stop()` は止まった証明にならない。同じ manager を渡していると、
+  // まだ止まりきっていない旧Runtimeが新世代と同じfd空間を触れてしまう
   const rpc = usePeerManager({
+    isolateGenerations: true,
+    fence: () => owner.release(),
     onError: (message) => dispatch({ type: "failed", message }),
   });
 
@@ -74,11 +114,27 @@ export function RequesterView() {
     send,
     ...rpc.handlers,
     // 失敗を伝えないと、Hono は active のまま固まって誰かの切断待ちになる(#78)。
-    // 世代番号は useWebrtcSignaling が古い世代の失敗を既に落としているので、
-    // コールバックが届いた時点の state.generation が現在の世代と一致する
-    onFailed: (message) => {
+    //
+    // ここへ来るのは**その世代で最初の致命的な失敗1回だけ**で、close /
+    // connectionState failed / SDP・ICE の失敗がすべて同じ道を通る
+    // (`webrtc/requesterSession.ts` の `fatalFail`)。到達した時点で
+    // `onClose` → fence → manager 退役 は済んでいるので、ここで画面に触るのは安全。
+    //
+    // **その場で畳む。** 進行中の run の後片付けには任せられない — 旧 run は
+    // 持ち主ではなくなっているので、正しく何もしないから。世代番号は変わらないため
+    // 描画中の初期化も走らない。ここが唯一の初期化の口になる。
+    //
+    // ⚠️ **既知の限界**: WebSocket が生きたまま DataChannel だけ死に、peer が `ready` の
+    // ままの場合、server は編成を idle に戻すが**顔ぶれが同じなので次の世代を始めない**
+    // (`roster.ts` の failedPeerIds / resetSinceStart、#56)。peer の切断・`error`・
+    // 入り直しのいずれかが要る。peer 画面の「参加し直す」導線(#63)が回復路になる。
+    // 自動復旧させるには `generation_failed` に peerId を載せる必要があり、
+    // server / shared-types の変更を伴うので今回は行わない。
+    onFailed: (generation, message) => {
+      windowRef.current = null;
+      resetGenerationState(); // generating:false → requester_accepting:true が送り直される
       dispatch({ type: "failed", message });
-      send({ type: "generation_failed", generation: state.generation });
+      send({ type: "generation_failed", generation });
     },
   });
   const distribution =
@@ -88,17 +144,33 @@ export function RequesterView() {
   // まだ繋がっていない相手をRPC deviceとして登録してしまう
   const allOpen = rtc.expectedIds.length > 0 && rtc.openIds.length === rtc.expectedIds.length;
 
+  // 世代が切り替わったら、**新しい世代の側で**生成まわりを初期化する。
+  //
+  // 旧 run の後片付けに任せない。旧 run はいつ解決するか(そもそも解決するか)分からず、
+  // 解決しても持ち主ではないので画面に触れない(触れないのが正しい)。
+  //
+  // 効果ではなく描画中にそろえる(`useWebrtcSignaling` の enabled と同じ形)。効果へ回すと
+  // 1描画ぶん「前の世代の生成中」が新しい世代の画面に残る
+  const [renderedGeneration, setRenderedGeneration] = useState(rtc.generation);
+  if (renderedGeneration !== rtc.generation) {
+    setRenderedGeneration(rtc.generation);
+    resetGenerationState();
+  }
+
   // requester役のRuntime。**世代ごとに作り直す**(RPC deviceは起動時の引数で固定される)
   const requester = useRequesterRuntime({
     manager: rpc.manager,
+    owner,
     generation: rtc.generation,
     allOpen,
     peerIds: rtc.expectedIds,
     model: { kind: "url", url: `/models/${MODEL_NAME}` },
     onText: (delta) => {
-      if (!generationActiveRef.current) return; // 起動時のstdoutは回答ではない
-      generationTextRef.current += delta;
-      setStreaming(generationTextRef.current);
+      const open = windowRef.current;
+      // 窓が開いていない = 起動時のstdout。持ち主でない = 前の世代の窓が残っているだけ
+      if (!open || !open.token.isCurrent()) return;
+      open.text += delta;
+      setStreaming(open.text);
     },
     // Runtimeのstderr。`load_tensors: layer N assigned to device RPC0` など、
     // 層がどのデバイスに載ったかはここにしか出ない
@@ -133,12 +205,16 @@ export function RequesterView() {
 
   // 推論中は新規peerの加入による再編成を保留させる(#50)。生成の開始・終了は
   // run() 側のタイマーとtoken/generation_end受信の両方から起きるので、
-  // 発生源を1箇所に絞れる generating の変化を見て送る
+  // 発生源を1箇所に絞れる generating の変化を見て送る。
+  //
+  // 世代交代の初期化と、**現行世代の失敗による drain** で generating が false へ戻った
+  // ぶんも同じ口を通る。通さないと `accepting: false` を送ったきりになり、Hono が
+  // 新規peerを永久に取り込めなくなる
   useEffect(() => {
-    if (previousGenerating.current === generating) return;
-    previousGenerating.current = generating;
-    send({ type: "requester_accepting", accepting: !generating });
-  }, [generating, send]);
+    const accepting = acceptingSignal.next(generating);
+    if (accepting === null) return;
+    send({ type: "requester_accepting", accepting });
+  }, [generating, send, acceptingSignal]);
 
   useEffect(() => {
     const currentSize = state.roster.length;
@@ -175,31 +251,41 @@ export function RequesterView() {
 
   const run = () => {
     if (!canSubmit || !input.trim()) return;
+    // **この生成を始めた世代を掴んでおく。** 解決したときにまだ持ち主かどうかで、
+    // 画面に触ってよいかを決める。持ち主は `useRequesterRuntime` に1つだけあり、
+    // ここでは自前に作らずそれを受け取る
+    const mine = requester.currentToken();
+    if (!mine) return;
+
     const prompt = input;
     setChat((c) => [...c, { role: "user", text: prompt }]);
     setInput("");
 
-    // 窓を開ける。ここから `generate()` が解決するまでに来たぶんが回答
-    generationTextRef.current = "";
-    generationActiveRef.current = true;
+    // 窓を開ける。ここから `generate()` が解決するまでに来たぶんが回答。
+    // **開けた世代ごと持つ**ので、世代が替われば明示的に閉じなくても無効になる
+    const open: GenerationWindow = { token: mine, text: "" };
+    windowRef.current = open;
     setStreaming("");
     setGenerating(true);
 
     void requester
       .generate(prompt)
       .then(() => {
-        const answer = generationTextRef.current;
-        if (answer) setChat((c) => [...c, { role: "assistant", text: answer }]);
+        if (!mine.isCurrent()) return; // 世代が替わっている。この回答はもう宛先がない
+        if (open.text) setChat((c) => [...c, { role: "assistant", text: open.text }]);
       })
       .catch((error: unknown) => {
+        // 世代交代でRuntimeを畳んだことによる中断は**障害ではない**。エラー画面にすると
+        // 正常な再編成が失敗に見える。中断の見せ方は再編成の表示(generation_aborted)に任せる
+        if (!mine.isCurrent() || error instanceof GenerationSupersededError) return;
         dispatch({ type: "failed", message: describeError(error) });
       })
       .finally(() => {
-        generationActiveRef.current = false;
-        generationTextRef.current = "";
-        setStreaming("");
-        setGenerating(false);
-        setComputingIndex(null);
+        // 自分が開けた窓だけ畳む。持ち主でなくなっていれば画面には触らない —
+        // 初期化は世代交代の描画中のそろえ、または現行世代の失敗の drain で済んでいる
+        if (windowRef.current === open) windowRef.current = null;
+        if (!mine.isCurrent()) return;
+        resetGenerationState();
       });
   };
 

@@ -165,7 +165,9 @@ export function PeerView() {
     lastMessage,
     send,
     ...rpc.handlers,
-    onFailed: reportPeerError,
+    // peer は世代を持ち回らない。`peer_status: "error"` に世代の概念がなく、
+    // サーバ側も同じ error を重ねて受けて構わない契約のため(roster.test.ts で固定)
+    onFailed: (_generation, message) => reportPeerError(message),
   });
   const progress = CONNECT_PROGRESS[rtc.status];
 

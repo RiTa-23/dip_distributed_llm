@@ -24,12 +24,21 @@ export type SessionCallbacks = {
   /** DataChannel上でデータが届いた。PeerManager の handleMessage へ渡す口 */
   onData: (generation: number, remoteId: string, data: unknown) => void;
   /**
-   * DataChannelが閉じた。PeerManager の detach へ渡す口。
+   * DataChannelが閉じた。PeerManager の detach / retire へ渡す口。
    * 載っている論理接続を畳ませないと、待たせているrecvが起きないままになる。
    * teardown() は受け口を外してから閉じるので、こちらは飛ばない。
+   *
+   * requester はここを**世代の致命傷の入口**としても使う。RPC deviceは起動時の
+   * `-rpc` 引数で固定されるので、close以外の失敗(connectionState failed、SDP/ICEの
+   * 失敗)も同じ道を通り、`onFailed` の直前に1回だけ上がる(`requesterSession.ts`)。
+   * peer は long-lived なので従来どおり相手ごとのclose通知のまま。
    */
   onClose: (generation: number, remoteId: string) => void;
-  /** 接続が張れなかった、または落ちた */
+  /**
+   * 接続が張れなかった、または落ちた。
+   * **requester では1セッションにつき最大1回**で、必ず `onClose` の後に来る
+   * (畳んで世代を失効させてから画面と制御プレーンへ伝えるため)。
+   */
   onFailed: (generation: number, remoteId: string, message: string) => void;
   /** 開通数などが変わった。画面の進捗表示を更新させるためだけに呼ぶ */
   onChange: () => void;
