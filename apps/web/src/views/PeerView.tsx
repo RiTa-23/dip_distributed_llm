@@ -78,6 +78,21 @@ const REORGANIZING_FALLBACK = {
 };
 
 /**
+ * 再編成中の見た目のトーン(#68)。「人が増えた」は嬉しい出来事、
+ * 「誰か落ちた」は残念な出来事なので、同じ扱いにしない。
+ */
+const REORGANIZING_TONE: Record<AbortReason, "joyful" | "calm"> = {
+  peer_joined: "joyful",
+  peer_disconnected: "calm",
+  connection_failed: "calm",
+};
+
+function reorganizingTone(reason: AbortReason | null): "joyful" | "calm" {
+  if (!reason) return "calm";
+  return REORGANIZING_TONE[reason] ?? "calm";
+}
+
+/**
  * 再編成が長引いたときの案内(#63)。文字列をJSXの中に直接置くと、行を折り返した
  * ぶんが半角スペースとして描画されて日本語の途中に隙間ができるため、ここで組む。
  */
@@ -108,15 +123,19 @@ function describeError(error: unknown): string {
 export function PeerView() {
   const [joined, setJoined] = useState(false);
   const [displayName, setDisplayName] = useState(DEFAULT_DISPLAY_NAME);
+  // useCluster が初期状態に取り込むので、先に決めておく
+  const [myId] = useState(() => getClientId("peer"));
   const { state, dispatch, send, lastMessage, assignments, debug } = useCluster({
     enabled: joined,
+    myId,
+    role: "peer",
   });
-  const [myId] = useState(() => getClientId("peer"));
   const env = useEnvironment();
 
   const { phase } = state;
   const isActive = phase === "active";
   const reorganizing = reorganizingText(state.abortReason);
+  const reorganizingNoticeTone = reorganizingTone(state.abortReason);
 
   // 再編成中から出る道はサーバの generation_start しかない。requesterが居ない、
   // 誰かが ready にならない、といった理由で次の世代が組めないと、画面は無言のまま
@@ -294,8 +313,21 @@ export function PeerView() {
           showDot={phase !== "idle"}
         />
 
-        {phase === "error" && state.errorMessage && (
-          <p className={styles.errorDetail}>{state.errorMessage}</p>
+        {/*
+          error から戻る道は、以前は TopBar の「離脱する」を押して表示名を入れ直し
+          「参加する」を押す2手しかなかった。編成から外れた参加者が error に留まる
+          ようになった(#79 の実機確認)ので、1手で戻れるようにする。
+          rejoin は離脱が反映された次の描画で join() を通す既存の経路
+        */}
+        {phase === "error" && (
+          <>
+            {state.errorMessage && <p className={styles.errorDetail}>{state.errorMessage}</p>}
+            <div className={styles.retry}>
+              <button type="button" onClick={rejoin}>
+                参加し直す
+              </button>
+            </div>
+          </>
         )}
 
         {phase === "idle" && (
@@ -340,7 +372,11 @@ export function PeerView() {
               </button>
             </div>
           ) : (
-            <p className={styles.notice}>{reorganizing.notice}</p>
+            <p
+              className={`${styles.notice} ${reorganizingNoticeTone === "joyful" ? styles.noticeJoyful : styles.noticeCalm}`}
+            >
+              {reorganizing.notice}
+            </p>
           ))}
 
         {(phase === "connecting" || phase === "active" || phase === "reorganizing") && (

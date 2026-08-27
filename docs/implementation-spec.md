@@ -339,5 +339,6 @@ export function useHonoSocket(_url: string) {
 
 ①待ちなのはWASMのビルドそのものです。
 
-- `llmlet-mod.js` / `llmlet-mod.wasm` — パッチ済みllama.cppのEmscriptenビルド。`-sEXPORTED_RUNTIME_METHODS` に `release_conn` を含めること
+- `llmlet-runtime.js` — Runtime adapter。**Web が読むのはこれ**(名前付きexport `startPeer` / `startRequester`)
+- `llmlet-mod.js` / `llmlet-mod.wasm` — パッチ済みllama.cppのEmscriptenビルド。adapter が隣から解決するので Web は直接importしない。**`release_conn` は export されていても使わない**(受信バッファの所有権は adapter 側。二重解放になる)
 - `onToken(callback: (token: string, done: boolean) => void)` — requester側、生成トークンのコールバック登録

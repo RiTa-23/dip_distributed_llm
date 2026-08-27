@@ -8,13 +8,20 @@ import type { ClusterAction } from "./clusterReducer";
 import { initialClusterState } from "../types/cluster";
 import type { ClusterState } from "../types/cluster";
 
+/**
+ * 自分を `c-1` と名乗る参加者。実際の画面では useCluster が myId と role を
+ * 初期状態に入れるので、既定値(myId は空文字)のままでは自分がどの編成にも
+ * 入っていないことになり、generation_start で connecting へ進まない
+ */
+const asPeer: ClusterState = { ...initialClusterState, myId: "c-1", role: "peer" };
+
 /** 続けて流し込む。実際の画面も1件ずつ dispatch するので同じ順で並べる */
-function run(actions: ClusterAction[], from: ClusterState = initialClusterState): ClusterState {
+function run(actions: ClusterAction[], from: ClusterState = asPeer): ClusterState {
   return actions.reduce(clusterReducer, from);
 }
 
-function start(generation: number): GenerationStartMessage {
-  return { type: "generation_start", generation, peerIds: ["c-1", "c-2"] };
+function start(generation: number, peerIds: string[] = ["c-1", "c-2"]): GenerationStartMessage {
+  return { type: "generation_start", generation, peerIds };
 }
 
 function aborted(
@@ -78,6 +85,76 @@ describe("clusterReducer の再編成", () => {
     });
     expect(clusterReducer(abortedState, { type: "reset" }).abortReason).toBeNull();
     expect(clusterReducer(abortedState, { type: "socket_closed" }).abortReason).toBeNull();
+  });
+});
+
+describe("clusterReducer の generationPeerIds(#81)", () => {
+  test("generation_start でpeerIdsが保存される", () => {
+    expect(running.generationPeerIds).toEqual(["c-1", "c-2"]);
+  });
+
+  test("次の世代のpeerIdsに置き換わる", () => {
+    const s = clusterReducer(running, {
+      type: "server",
+      msg: { type: "generation_start", generation: 2, peerIds: ["c-1", "c-3"] },
+    });
+    expect(s.generationPeerIds).toEqual(["c-1", "c-3"]);
+  });
+
+  test("socket_closed で空に戻る", () => {
+    expect(clusterReducer(running, { type: "socket_closed" }).generationPeerIds).toEqual([]);
+  });
+
+  test("reset で空に戻る", () => {
+    expect(clusterReducer(running, { type: "reset" }).generationPeerIds).toEqual([]);
+  });
+});
+
+describe("clusterReducer の編成外の判定(#78, #79)", () => {
+  /** 編成が組まれるのを待っている参加者 */
+  const waiting = run([{ type: "socket_opened" }, { type: "local_ready" }]);
+
+  test("編成に入っていれば connecting へ進む", () => {
+    const s = clusterReducer(waiting, { type: "server", msg: start(1, ["c-1", "c-2"]) });
+    expect(s.phase).toBe("connecting");
+  });
+
+  test("編成に入っていなければ waiting に留まる", () => {
+    const s = clusterReducer(waiting, { type: "server", msg: start(1, ["c-2", "c-3"]) });
+    // 進めると来ないofferを待って永久に止まる
+    expect(s.phase).toBe("waiting");
+    // 世代と編成の顔ぶれは、自分が入っていなくても追いかける
+    expect(s.generation).toBe(1);
+    expect(s.generationPeerIds).toEqual(["c-2", "c-3"]);
+  });
+
+  test("errorの参加者は編成外でも error のまま残る", () => {
+    const failed = clusterReducer(waiting, { type: "failed", message: "起動に失敗しました" });
+    const s = clusterReducer(failed, { type: "server", msg: start(1, ["c-2", "c-3"]) });
+    // waiting に戻すと、なぜ外されたのかが画面から消える
+    expect(s.phase).toBe("error");
+    expect(s.errorMessage).toBe("起動に失敗しました");
+  });
+
+  test("errorの参加者は generation_aborted でも error のまま残る", () => {
+    // 実機では generation_aborted が generation_start より先に届く。ここで
+    // reorganizing にしてしまうと、上のテストの error 判定に届かない
+    const failed = clusterReducer(waiting, { type: "failed", message: "起動に失敗しました" });
+    const s = clusterReducer(failed, { type: "server", msg: aborted(1, "connection_failed") });
+    expect(s.phase).toBe("error");
+    expect(s.errorMessage).toBe("起動に失敗しました");
+  });
+
+  test("発表者は peerIds に載らないが connecting へ進む", () => {
+    const asRequester: ClusterState = {
+      ...initialClusterState,
+      myId: "requester-1",
+      role: "requester",
+    };
+    const s = run([{ type: "socket_opened" }, { type: "local_ready" }], asRequester);
+    expect(clusterReducer(s, { type: "server", msg: start(1, ["c-1", "c-2"]) }).phase).toBe(
+      "connecting",
+    );
   });
 });
 

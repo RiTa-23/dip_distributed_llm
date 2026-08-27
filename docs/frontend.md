@@ -6,7 +6,7 @@
 
 - **画面は2つ。URLのパスだけで役割が決まる**(入口で選ばせる画面は作らない)
 - **制御プレーンは本物のHonoに繋がっている**(2026/8/25に既定を切り替えた)。Honoを起動せずに見た目だけ試したいときはモックへ戻せる
-- **データプレーン(WebRTC)はDataChannelが開くところまで入った**(2026/8/25)。その上を流れるRPC通信は①待ちなので、生成・処理量は今もダミーで動く
+- **データプレーン(WebRTC)は実Runtimeまで繋がった**(B-1)。DataChannelの上を real llama.cpp RPC が流れ、real GGUF で実推論まで通っている。未証明なのは TURN の実機だけ
 
 ## 動かし方
 
@@ -23,7 +23,7 @@ bun run dev
 
 既定で本物のHono(`/ws`)へ繋ぎます。接続先は**画面を開いているオリジン**です。Honoがフロントごと配っている(`bun run --cwd apps/server dev` で `:3000` / `:8443` を開く)場合はこれだけで繋がります。
 
-viteのdevサーバ(`:5173`)とHonoを別々に動かすときは、Honoのオリジンを渡してください。`/ws` と `/join-info` の両方がプロキシされます。
+viteのdevサーバ(`:5173`)とHonoを別々に動かすときは、Honoのオリジンを渡してください。`/ws` と `/join-info` と `/models` の3つがプロキシされます。
 
 ```bash
 VITE_HONO_ORIGIN=http://localhost:3000 bun run dev
@@ -83,6 +83,14 @@ idle ─→ preparing ─→ waiting ─→ connecting ─→ active
 
 発表者側は `generation_failed` を送るようになりました(#78)。WebRTC接続に失敗すると `RequesterView` の `onFailed` から送信し、Honoが `generation_aborted`(`connection_failed`)で編成を組み直します。参加者側の「時間で気づく」しくみ(上記)は、requesterが失敗以外の理由で無言のまま止まった場合の保険として残っています。
 
+**ただし `onFailed` が発火するまでが速いとは限りません**(2026/8/27の実機確認で判明)。参加者が「answerを返さないまま黙る」形で落ちると、発表者の `RTCPeerConnection` は `connectionState` が `failed` になるまで、つまりICEが諦めるまで何も言いません。その間 Honoから見た `phase` は `active` のままなので、落ちた参加者が `peer_status: "error"` を送っていても(#79)編成は組み直されず、発表者画面は `connecting` で止まり続けます。**復帰の速さは #79 ではなく発表者側の失敗検知の速さで決まります。** 再現手順は [`webrtc-implementation.md`](webrtc-implementation.md) の「2台の参加者で異常系を確かめる」にあります。
+
+そこで発表者側にも時間切れを入れました。配布中(`connecting`)が `CONNECT_STALL_MS`(10秒、[`config.ts`](../apps/web/src/config.ts))続いたら、ICEを待たずに `generation_failed` を送ります。測るのは参加者画面と同じ [`useStalled`](../apps/web/src/hooks/useStalled.ts) です。
+
+- **ここでもフェーズは動かしません。** 時間切れで送るのは `generation_failed` だけで、`dispatch({ type: "failed" })` はしません。画面を動かすのはHonoが返す `generation_aborted` で、サーバが唯一の出口という形は変えていません
+- `onFailed` からの送信(#78)は残してあります。相手が明示的に閉じた場合はそちらの方が速く、時間切れは**取りこぼしの保険**です。二重に送っても2通目はHono側の `applyGenerationFailed` が `phase !== "active"` で捨てます
+- 除外された側も止まりません。`generation_start` の `peerIds` に自分が居ない参加者は `connecting` へ進まず、`waiting`(`error` だったなら `error` のまま)に留まります。判定に使う `myId` / `role` は `useCluster` が初期状態に入れています
+
 #### 発表者の「世代の致命傷」は1本道にまとめてあります
 
 以前は `pc.connectionState === "failed"` のときだけ `generation_failed` を送っていました。DataChannel が閉じただけのとき(peer の WebSocket は生きたまま回線だけ落ちた等)は送られず、Hono は `phase: active` のまま固まって発表者は永久に `connecting` のままでした。
@@ -118,16 +126,14 @@ idle ─→ preparing ─→ waiting ─→ connecting ─→ active
 
 ### 発表者だけ、もう1本のトラックが並行する
 
-モデル(GGUF)のダウンロードは数GBあるので、編成の進行とは**独立して**画面を開いた瞬間から走ります。
+モデル(GGUF)のダウンロードは数GBあるので、編成の進行とは**独立して**画面を開いた瞬間から走ります(`hooks/useModelDownload.ts`)。`fetch` + `ReadableStream` で実測しますが、**取得したバイトは数えたら捨てています**。①のWASMへ渡す経路は #71 の範囲で、このトラックは進捗表示までが対象です。
 
 ```text
 トラックA  ダウンロード ─────────────────→ 完了
 トラックB  preparing → waiting → connecting → active
-                                              ↓
-                          両方そろって初めて入力欄が開く
 ```
 
-つまり入力欄が使えるかどうかは `phase === "active" && modelReady` の **AND** です。片方だけでは開きません。
+**取得に失敗しても送信は止めません**(本人判断、2026/8/27)。モデル本体はまだ推論に使われていないため、GGUFが置いてあるかどうかだけでデモが死ぬのを避けています。入力欄が使えるかどうかは `phase === "active" && !generating` だけで決まり、モデルDLの状態とは独立です。
 
 ## ディレクトリ
 
@@ -163,7 +169,7 @@ apps/web/src/
 │   ├── peerManager.ts         開いたDataChannelにllama.cppのRPCを載せる
 │   │                          (WASM側が呼ぶ Module.PeerManager の実装)
 │   ├── wasmEngine.ts          ①のWASMを読み込んで上のPeerManagerを差し込む
-│   │                          (読めなければダミー経路へ落ちる)
+│   │                          (読めなければ失敗。ダミーへは落ちない)
 │   └── peerStats.ts           流れたバイト数とRPCの往復の数え上げ(計測の実体)
 ├── components/                両画面で使う部品。1部品1フォルダ相当
 │   ├── TopBar / StatusBlock / LayerBar / ProgressBar / Metric / DevPanel
@@ -326,12 +332,12 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 
 参加者画面のエンジン起動は、2.2秒の `setTimeout` から本物の読み込みに替わりました([`webrtc/wasmEngine.ts`](../apps/web/src/webrtc/wasmEngine.ts))。やっているのは4つです。
 
-1. `/wasm/llmlet-mod.js` を動的importして初期化する(配信は Hono の `public/wasm`)
+1. **`/wasm/llmlet-runtime.js`**(Runtime adapter)を動的importして初期化する(配信は Hono の `public/wasm`)。Web が直接読むのはこの adapter で、Emscripten の `llmlet-mod.js` / `.wasm` は adapter が自分の隣から解決します
 2. `Module.PeerManager = rpc.manager` を差し込む
-3. `Module.release_conn` があれば `usePeerManager({ releaseBuf })` へ渡す
-4. rpc-server役(`startServer` 相当)を呼ぶ。返ったら `local_ready` と `peer_status: ready`
+3. `ChunkCache` / model の受け渡しなど、adapter が要求する glue を繋ぐ
+4. `startPeer` / `startRequester` を呼ぶ。返ったら `local_ready` と `peer_status: ready`
 
-**①のビルドはまだ無いので、既定では1で失敗してダミー経路(2.2秒待って準備完了)へ落ちます。** 落ちなければビルドが届くまで参加者画面が一切進まなくなるため、これが通常の経路です。どちらを通ったかはコンソールの `[wasm]` 行で区別できます(成功は `info`、フォールバックは `warn`)。
+**Runtime は統合済みです(B-1)。** real GGUF / real RPC / real Runtime で実推論まで通っています。**読み込みや起動に失敗してもダミー経路へは落ちません** — そのまま失敗として返します。モデルもRPCも通っていないのに画面だけ準備完了になると、動いているかどうかの判定にならないためです。どの経路を通ったかはコンソールの `[wasm]` 行で追えます。
 
 画面から呼ぶ入口は [`hooks/useWasmEngine.ts`](../apps/web/src/hooks/useWasmEngine.ts) で、`role` を替えれば発表者側(rpc-client役)からも同じものを使えます。`PeerView` に残っているのは呼び出しの5行だけです。
 
@@ -340,7 +346,7 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 | | なぜ |
 |---|---|
 | `nodeId` は自分の `clientId` をそのまま渡す | llama.cppの `rpc_servers` の文字列がそのまま `connect(nodeId, done)` に来るため([`lib/clientId.ts`](../apps/web/src/lib/clientId.ts)) |
-| 起動関数の名前は候補から探す | ①のビルドがまだ無く、実際の名前を確認できない。`ENTRY_NAMES` に1行足せば済む形にしてある |
+| 起動関数の名前は adapter の契約に合わせる | Web が読むのは `llmlet-runtime.js` で、名前付きexport `startPeer` / `startRequester` がある。無ければ失敗として返す |
 | 起動関数が返らなくても先へ進む | rpc-server役は待ち受けたまま戻らない作りがありうる。待ち続けると準備中で止まる |
 | 1つのPeerManagerにエンジンは1つ | 参加 → 離脱 → 再参加で起動処理は何度でも呼ばれる。起動中の再参加は走っているものに相乗りし、載ったあとは覚えたものを返す(`createEngineStarter`)。素通しすると同じ回線の上にrpc-serverが2つ立つ |
 
@@ -359,7 +365,7 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
   - **まだ実機で通していません。** 同一PCの forced relay も物理2PCも未実施です
 - 会場のAPアイソレーションが有効な場合、TURNがあれば中継で通せる見込みですが、これも未実測です(`docs/webrtc-implementation.md`)
 - **WebRTCの失敗で `peer_status: "error"` を送るようになりました(#79)。** 以前はサーバの「全員ready」が崩れて次の世代が始まらず、1人の失敗で全体が止まるため送っていませんでしたが、#57でHonoが `status: "error"` のpeerを編成から外すようになったため解消しました。復帰時の `ready` 送り直しは、離脱→再参加で `useWasmEngine` の `onReady` が通る既存の経路に乗っています
-- **WASM本体がありません。** `peerManager.ts` は両画面に繋ぎ込み済みで、DataChannelが開けば `attach` まで走ります。差し込む起動処理も入りました(上の「①のWASMを起動する」)が、差し込む相手(`llmlet-mod.js` / `.wasm`)が①からまだ来ていないため、既定ではダミー経路を通ります
+- **Runtime は統合済みです(B-1)。** `peerManager.ts` は両画面に繋ぎ込み済みで、DataChannelが開けば `attach` まで走ります。Web が読むのは Runtime adapter の `/wasm/llmlet-runtime.js` で、real GGUF / real RPC / real Runtime による実推論まで通っています(`webrtc/wasmEngine.ts`)。**読み込みに失敗してもダミー経路へは落ちません。** 未証明なのは TURN の実機だけです
   - **RPCのバイト列そのものは、WASMの代役スタブで流して確認済みです**(2026/8/25、#44)。実物のDataChannelで16MiBの往復がバイト一致で通っています。開発中は参加者のタブで `__rpc.serve()`、発表者のタブで `await __rpc.check()` で試せます(`docs/webrtc-implementation.md` の「WASMの代役スタブで確認したこと」)
 
 ## 計測(処理回数・受信データ・応答時間)
@@ -412,7 +418,7 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 
 1つ目は必須です。2つ目以降は余裕があれば、という前提の依頼で、無くても画面は成立します。
 
-1. **WASMのビルド(`llmlet-mod.js` / `.wasm`)を出してください。** RPCの橋渡し([`webrtc/peerManager.ts`](../apps/web/src/webrtc/peerManager.ts))はこちらで書き終えていますが、差し込む相手が無いと動きません。ビルド時の必須条件は `-sEXPORTED_RUNTIME_METHODS` に `release_conn` を含めることです(詳細は `docs/webrtc-implementation.md`)
+1. ~~**WASMのビルドを出してください。**~~ 届きました。Web が読むのは Runtime adapter の `llmlet-runtime.js` で、その隣の `llmlet-mod.js` / `.wasm` は adapter が解決します。RPCの橋渡し([`webrtc/peerManager.ts`](../apps/web/src/webrtc/peerManager.ts))と繋ぎ込み済み。**`release_conn` は使いません**(受信バッファの所有権は adapter 側。二重解放になる)
 2. `getLayerAssignment()` … 各ピアの担当層。無い場合は層番号の表示を諦めます
 3. `onComputeStart` / `onComputeEnd` … 参加者側で「自分の番」が来た/終わったの通知。**無くても計測は動きます**(#47。DataChannel上の往復を PeerManager 側で数えているので、`getStats()` のポーリングは要りませんでした)。もらえると「自分の番」の境目がRPCの往復ではなく計算そのものになるので、処理回数と処理時間の意味が一段はっきりします
 
@@ -428,16 +434,16 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 | `lib/assignments.ts` | 均等割り | ①の `getLayerAssignment()` |
 | ~~`PeerView` のWebRTC接続~~ | — | 本物になりました(2026/8/25)。`useWebrtcSignaling` の `status` が `open` になったら受信中を抜けます |
 | ~~`RequesterView` の配布率~~ | — | 本物になりました(2026/8/25)。開いたDataChannelの数 ÷ 繋ぐべき人数です |
-| `PeerView` のエンジン起動 | ①のビルドが無いあいだだけ2.2秒待つ([`webrtc/wasmEngine.ts`](../apps/web/src/webrtc/wasmEngine.ts)) | 同じファイル。`llmlet-mod.js` が置かれれば自動でそちらを通る(#71) |
+| ~~`PeerView` のエンジン起動~~ | — | 実物になりました。`llmlet-runtime.js` を読んで `startPeer` を呼びます([`webrtc/wasmEngine.ts`](../apps/web/src/webrtc/wasmEngine.ts)、B-1) |
 | ~~`PeerView` の処理回数・受信量~~ | — | 実測になりました(#47)。数えているのは [`webrtc/peerStats.ts`](../apps/web/src/webrtc/peerStats.ts)。①のWASMが載るまでは動かないので画面には `—` が出ます。乱数へ戻すときは `VITE_FAKE_METRICS=1` |
-| `RequesterView` のモデルDL | 一定速度のタイマー | `fetch` + `ReadableStream` の実測 |
-| `RequesterView` の生成 | 固定文を1文字ずつ | ①の `onToken()` |
-| `RequesterView` の「計算中」の移動 | 12文字ごとに次のピアへ | ①の `onPeerTurn()` |
+| `RequesterView` のモデル進捗 | Runtimeのready(0か1) | #80 の実測(`useModelDownload`)は**画面へ繋いでいない** — Runtimeが同じGGUFを自分で取るので繋ぐと491MBを二重に引く。Runtime側が進捗を報せられるようになってから繋ぐ |
+| ~~`RequesterView` の生成~~ | — | 実物になりました(B-1)。Runtime adapter の `onText(delta)` がそのまま流れます。**真のtoken境界ではなく文字出力**なので、API名は `onToken` ではなく `onText` です |
+| `RequesterView` の「計算中」の移動 | 出していない(`computingIndex` は常に null) | Runtime側が層ごとの担当を報せられるようになったら繋ぐ |
 
 ## 次にやること
 
 1. ~~**WebRTCのシグナリング(`webrtc_signal` の送受信)。**~~ 入りました(#37)。上の「データプレーンの繋ぎ込み(ステップ4)」を参照
 2. ~~**①へDataChannelを渡す。**~~ 担当が変わり、RPCの繋ぎ込みまでこちらで持ちます。橋渡しの本体([`webrtc/peerManager.ts`](../apps/web/src/webrtc/peerManager.ts))と、両画面への繋ぎ込み([`hooks/usePeerManager.ts`](../apps/web/src/hooks/usePeerManager.ts))が入りました
-3. ~~**WASMが来たら `Module.PeerManager = rpc.manager` を差し込む。**~~ 参加者側の起動処理が入りました(#71、上の「①のWASMを起動する」)。①のビルド(`llmlet-mod.js` / `.wasm`)が置かれれば自動でそちらを通ります。残っているのは発表者側(rpc-client役)の起動で、③と分担を決めてから別Issueで進めます
+3. ~~**WASMが来たら `Module.PeerManager = rpc.manager` を差し込む。**~~ 両画面とも入りました(B-1)。参加者は `startPeer`、発表者は `startRequester` を Runtime adapter 経由で呼びます
 4. 上の「②へ」の2番(新しい参加者が来たときの再編成)を②と詰める
 5. ~~`PeerView` の処理回数・受信量を実測に替える。~~ 入りました(#47)。計測点は `getStats()` ではなく PeerManager です(本文のバイト数を厳密に数えられ、`getStats()` では取れない処理回数も取れるため)

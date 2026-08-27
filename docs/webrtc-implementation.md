@@ -161,6 +161,81 @@ function teardownAllConnections() {
 - `pc.connectionState` / `pc.iceConnectionState`をログ出力
 - offer/answer/ice-candidateの`targetId`到達確認はHono側ログで
 
+### 2台の参加者で異常系を確かめる(2026/8/27、#78・#79)
+
+「1台が接続に失敗しても、残りで世代が始まる」を1台のPCで確かめる手順です。#78・#79の受け入れ条件がこの確認を要求しています。
+
+最初にこの手順を踏んだ時点(2026/8/27)では、最後まで進めても残りで世代が始まりませんでした。#79(参加者が `peer_status: "error"` を送る)までは通っていて、そこから先が止まっていました。原因はつまずき3に書いたとおりで、**発表者側に時間切れ(`CONNECT_STALL_MS`)を入れて解消しました**。手順そのものはそのまま受け入れ条件の確認に使えます。
+
+**素直にやると3か所でつまずきます**(いずれも実際に踏みました)。順番に潰していきます。
+
+#### 1. Honoを起動する
+
+```bash
+bun run --cwd apps/server dev
+```
+
+`apps/server/certs/` に `cert.pem` と `key.pem` があれば **https の 8443** で、無ければ http の 3000 で待ち受けます([`apps/server/src/index.ts`](../apps/server/src/index.ts) の `hasTls`)。起動ログの `Hono server listening on ...` で確かめてください。証明書が無ければ `bun run --cwd apps/server cert` で作れます。
+
+#### 2. dev サーバの繋ぎ先は `VITE_HONO_WS_URL` にする
+
+`apps/web/.env.local` を作ります(`*.local` は [`apps/web/.gitignore`](../apps/web/.gitignore) の対象なのでコミットされません)。
+
+```dotenv
+VITE_HONO_WS_URL=wss://localhost:8443/ws
+```
+
+- 中身は手順1で確かめた待ち受け先に合わせます。証明書を作らず http の 3000 で起動した場合は `ws://localhost:3000/ws` です。[`config.ts`](../apps/web/src/config.ts) の `WS_URL_OVERRIDE` はこの値をそのまま接続先にするので、スキームとポートが食い違うと繋がりません
+- **つまずき1: `VITE_HONO_ORIGIN` 経由のviteプロキシは使えません。** 自己署名証明書へのWebSocketプロキシが `secure: false` を付けても完了せず、`new WebSocket('ws://localhost:5173/ws')` が `readyState = 0`(CONNECTING)のまま無応答になります
+- 症状が分かりにくいのが厄介で、**画面は `idle` のまま何のエラーも出ません**。`参加する` を押しても無反応に見えます。`useHonoSocket` は接続が開くまでフェーズを動かさないためです
+- WebSocketにCORSは無いので、別オリジンへ直接繋いで構いません。証明書が mkcert 由来でブラウザに信頼されていれば、これで通ります
+
+そのうえで dev サーバを起動します。
+
+```bash
+bun run --cwd apps/web dev
+```
+
+#### 3. タブごとに別のclientIdを持たせる
+
+- **つまずき2: 同じブラウザの2タブは同じclientIdを名乗ります。** `clientId` は [`lib/clientId.ts`](../apps/web/src/lib/clientId.ts) が `localStorage` に持ちますが、localStorage はオリジン単位なので `http://localhost:5173` を2枚開いても値は1つです
+- 後から `hello` した方が Honoの `clients` Map を上書きし、**先に繋いだタブがロスターから消えます**。画面には `参加者 0人` と出るだけで、理由はどこにも出ません
+
+各タブのコンソールで別々の値を入れてからリロードしてください。`getClientId` は保存済みの値をそのまま返すので、以後はその値で名乗ります。
+
+```js
+localStorage.setItem("dip.clientId.peer", "peer-A-test"); // もう一方は peer-B-test
+location.reload();
+```
+
+発表者は `dip.clientId.requester` という別のキーなので、参加者とは衝突しません(この役割ごとの分離自体が2026/8/25の実機確認で入ったものです。経緯は `clientId.ts` の冒頭コメント)。
+
+#### 4. 片方の参加者をわざと失敗させる
+
+壊す側のタブで、`参加する` を押す**前に**コンソールで差し替えます。
+
+```js
+RTCPeerConnection.prototype.createAnswer = () => Promise.reject(new Error("意図的な失敗"));
+```
+
+[`peerSession.ts`](../apps/web/src/webrtc/peerSession.ts) の offer 処理が `createAnswer` の失敗を catch し、`fail()` → `onFailed` → `peer_status: "error"` の送信(#79)まで通ります。
+
+- **つまずき3: この壊し方だと発表者側の失敗検知はすぐには起きません。** 壊した参加者は「answerを返さないまま黙る」ので、発表者の `RTCPeerConnection` は `connectionState` が `failed` になるまで(ICEが諦めるまで)何も言いません
+- その間 Hono から見た `phase` は `active` のままで、`peer_status: "error"` を受けても編成を組み直せません(`applyPeerStatus` が呼ぶ `maybeStartGeneration` は idle 専用、`maybeReformForGrowth` は未参加のreadyなpeerを要求するため、どちらも空を返す)
+- **つまり復帰の速さは #79 ではなく発表者側の失敗検知の速さで決まります。** これがあるので、発表者は配布中が `CONNECT_STALL_MS`(10秒)続いた時点でICEを待たずに `generation_failed` を送ります([`config.ts`](../apps/web/src/config.ts))
+
+#### 5. 開く順番と見るべき結果
+
+参加者2枚を先に `waiting` まで進めてから、発表者(`/requester`)を開きます。発表者が居ないと `maybeStartGeneration` が発火しないためです。
+
+確認できること:
+
+- 壊した側が `error` フェーズに落ち、**発表者のPEERS一覧がその参加者を `エラー` と表示する**(= `peer_status: "error"` がHonoに届いてロスターに載った)
+- 発表者は一度 `connecting` / `接続 1/2人` で止まるが、**10秒(`CONNECT_STALL_MS`)で見切って `generation_failed` を送り、壊れていない側だけで第2世代が始まる**。止まっているあいだの案内は「接続できない参加者がいます。編成を組み直しています」
+- 第2世代の `generation_start` を受け取った**壊した側は `connecting` へ飛ばず、`error` のまま**失敗の理由を出し続ける(編成の `peerIds` に自分が入っていないため)。`参加し直す` を押すと `waiting` まで戻り、次の再編成で編成に入る
+
+
+
 ## データプレーン: llama.cppのRPCをDataChannelに載せる
 
 ### 誰が何を持つか(2026/8/25更新)
@@ -173,7 +248,7 @@ function teardownAllConnections() {
 | Hono側の `webrtc_signal` 素通し中継 | ② | 完了(#19) |
 | DataChannel ↔ llama.cpp RPC の橋渡し(`PeerManager`) | WebRTC担当 | 実装済み(下記) |
 | WASMのページへの読み込みと起動(`webrtc/wasmEngine.ts`) | WebRTC担当 | 実装済み(#71) |
-| WASMのビルド(`llmlet-mod.js` / `.wasm`) | ① | 未着手 |
+| WASMのビルド(`llmlet-mod.js` / `.wasm`)と Runtime adapter(`llmlet-runtime.js`) | ① | 完了。Web が読むのは adapter 側 |
 
 ### llmletのどこを差し替えるか
 
@@ -261,7 +336,7 @@ const rtc = useWebrtcSignaling({
 
 ### WASMの代役スタブで確認したこと(2026/8/25、#44)
 
-WASM本体はまだ来ていませんが、**C側と同じ呼び方をする代役**([`webrtc/rpcStub.ts`](../apps/web/src/webrtc/rpcStub.ts))を書いて、橋渡しの側だけ先に確定させてあります。真似ているのは手続き(`accept` → `recv`(ヘッダ) → `recv`(本体) → `send`(応答))であって中身の意味ではありません。C側と揃えてあるのは次の2点です。
+Runtime が来る前に、**C側と同じ呼び方をする代役**([`webrtc/rpcStub.ts`](../apps/web/src/webrtc/rpcStub.ts))を書いて、橋渡しの側だけ先に確定させてあります。真似ているのは手続き(`accept` → `recv`(ヘッダ) → `recv`(本体) → `send`(応答))であって中身の意味ではありません。C側と揃えてあるのは次の2点です。
 
 - `recv` は要求したぶんが一度に来るとは限らないので、集まるまで繰り返す(llama.cppの `recv_data` と同じ)
 - `send` の戻り値が短ければ残りを送り直す(同 `send_data`。送信キューが埋まったときにここが効く)
@@ -282,18 +357,25 @@ await __rpc.check({ sizeMiB: 8 })
 
 **送ったものを加工して返す**作りにしてあるので、中身を読まずに返すだけの相手では通りません。分割・順序・詰まったときの送り直しが噛み合っていることの確認になります。
 
-### まだ無いもの
+### Runtime は統合済み(B-1)
 
-WASM本体(`llmlet-mod.js` / `.wasm`)がまだ来ていません。**受け口の側は先に書いてあります**([`apps/web/src/webrtc/wasmEngine.ts`](../apps/web/src/webrtc/wasmEngine.ts)、#71)。やっているのは上の2つです。
+Web が読むのは **Runtime adapter の `/wasm/llmlet-runtime.js`**(名前付きexport `startPeer` /
+`startRequester`)です。Emscripten の `llmlet-mod.js` / `.wasm` は adapter が自分の隣から
+解決するので、Web 側が直接 import することはありません。
 
 ```ts
-// 1. register_buf で預かった番地の解放先を渡す(usePeerManager の引数に足す)
-const rpc = usePeerManager({ releaseBuf, onError })
-
-// 2. 起動処理の中でWASMへ載せる
+// 起動処理の中でWASMへ載せる
 Module.PeerManager = rpc.manager
 ```
 
-`/wasm/llmlet-mod.js` が404の今は、読み込みに失敗した時点でダミー経路(2.2秒待って準備完了)へ落ちます。ビルドが置かれれば、それだけで本物の経路に切り替わります。**ビルドが来たときに確認するのは起動関数の名前だけ**で、`wasmEngine.ts` の `ENTRY_NAMES`(既定は `startServer` / `startClient`)と違っていたらそこへ足します。
+**`release_conn` は使いません。** 受信バッファはそれを malloc した pthread 側に残るため、
+main thread から解放すると fd 再利用時に use-after-free になります。解放は adapter の
+`close_peer()` 側が持ちます(Runtime 側の handoff 契約)。`usePeerManager` の `releaseBuf` も
+渡しません。
+
+**読み込みや起動に失敗してもダミー経路へは落ちません**([`webrtc/wasmEngine.ts`](../apps/web/src/webrtc/wasmEngine.ts))。
+モデルもRPCも通っていないのに画面だけ準備完了になると、動いているかどうかの判定に
+ならないためです。real GGUF / real RPC / real Runtime による実推論は B-1 で実測済みで、
+**未証明なのは TURN の実機だけ**です。
 
 ビルド側の前提(llmletのMakefileより): emsdk 4.0.16以上、`-sMEMORY64=2`(wasm64)、emdawnwebgpu(Dawn)、`-sEXPORTED_RUNTIME_METHODS` に `release_conn` を含めること。パッチ済みllama.cppは `ktock/llama.cpp` のフォークです。

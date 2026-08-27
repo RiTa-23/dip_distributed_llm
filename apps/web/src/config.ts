@@ -18,10 +18,25 @@ export const DEFAULT_DISPLAY_NAME = "参加者のPC";
  *
  * 正常な再編成でも待ち時間はある。増えた側のエンジン起動が終わるまで
  * Honoは次の `generation_start` を出せないため、既存の参加者はそのあいだ
- * 再編成中で止まる(今のダミー起動で2.2秒、①のWASMが載ればもう少し伸びる)。
+ * 再編成中で止まる(実Runtimeの起動とモデル読み込みぶん)。
  * それを踏まえて余裕をとった値で、正常系でこの案内が出てはいけない。
  */
 export const REORGANIZING_STALL_MS = 12_000;
+
+/**
+ * 発表者の配布中(connecting)がこれだけ続いたら、編成が成立しなかったとみなして
+ * `generation_failed` を送る(#78の実機確認で判明した穴)。
+ *
+ * 参加者がanswerを返さないまま黙って落ちると、発表者の `RTCPeerConnection` は
+ * ICEが諦めるまで `connectionState` が `failed` にならない(30秒以上かかる)。
+ * その間 Honoから見た phase は active のままなので、落ちた参加者が
+ * `peer_status: "error"` を送っていても(#79)編成は組み直されない。
+ *
+ * ここで測るのはDataChannelの開通だけで、モデルのダウンロードは別トラック
+ * (編成の進行とは独立に進む)なので、その所要時間は勘定に入れない。
+ * 会場LANのWebRTCが数秒かかることを見込んでも、この長さなら正常系では出ない。
+ */
+export const CONNECT_STALL_MS = 10_000;
 
 /**
  * `/ws` の接続先の上書き。既定(空文字)では画面を配信しているオリジンへ繋ぐ。

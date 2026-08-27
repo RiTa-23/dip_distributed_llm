@@ -52,6 +52,24 @@ export type ClusterState = {
    * その判定は `ClientRecord.resetSinceStart` を見る。
    */
   failedPeerIds: string[] | null;
+  /** 起動してからの累計・最大値(#60)。プロセスが落ちればリセットされてよい。 */
+  stats: ClusterStats;
+  /**
+   * これまでに見た peer の clientId(#60)。累計人数を数えるために持つ。
+   * 同じ人がリロードしても clientId は localStorage で保たれるので二重に数えない。
+   */
+  seenPeerIds: Set<string>;
+};
+
+/**
+ * デモの締めに出す数字(#60)。永続化はしない(AGENTS.md 前提6の範囲で完結させる)。
+ * ロスターの現在値ではなく「これまで」を持つのがここの役目。
+ */
+export type ClusterStats = {
+  /** これまでに hello を送ってきた peer のユニーク数 */
+  totalPeers: number;
+  /** 同時に接続していた peer の最大数 */
+  peakPeers: number;
 };
 
 /** wiring 層が解釈する送出指示。broadcast=全員へ / unicast=targetId のみへ。 */
@@ -67,6 +85,8 @@ export function createState(): ClusterState {
     activeGenerationPeerIds: null,
     acceptingGrowth: true,
     failedPeerIds: null,
+    stats: { totalPeers: 0, peakPeers: 0 },
+    seenPeerIds: new Set(),
   };
 }
 
@@ -83,6 +103,16 @@ export function currentRoster(state: ClusterState): PeerInfo[] {
 
 function rosterUpdate(state: ClusterState): RosterUpdateMessage {
   return { type: "roster_update", peers: currentRoster(state) };
+}
+
+/** 統計を更新する(#60)。ロスターが動いたときに呼ぶ。 */
+function trackPeer(state: ClusterState, clientId: string): void {
+  if (!state.seenPeerIds.has(clientId)) {
+    state.seenPeerIds.add(clientId);
+    state.stats.totalPeers += 1;
+  }
+  const now = currentRoster(state).length;
+  if (now > state.stats.peakPeers) state.stats.peakPeers = now;
 }
 
 /**
@@ -210,6 +240,7 @@ export function applyHello(
   // 入り直しはそれ自体がやり直し。`connecting` から始まるので、ここで即座に
   // 同じ編成を組み直すことにはならない(`eligiblePeerIds` が準備中を待つ)。
   state.clients.set(clientId, { role, displayName, status: "connecting", resetSinceStart: true });
+  if (role === "peer") trackPeer(state, clientId);
   // requesterの(再)接続でacceptingGrowthをtrueにリセットする。操作者不在のまま
   // falseに固定されて新規peerが永久に取り込まれなくなるのを防ぐ(#34)。
   if (role === "requester") state.acceptingGrowth = true;

@@ -63,6 +63,42 @@
 }
 
 /*
+ * 再編成のきっかけで見せ方を分ける(#68)。「人が増えた」は嬉しい出来事なので、
+ * .notice のactive色をそのまま使い、現れる瞬間だけ弾む。「誰か落ちた」は
+ * 残念な出来事なので、.line色の落ち着いた見た目に留める(activeは
+ * 「稼働中」を表す色なので祝い事以外では使わない)
+ */
+.noticeJoyful {
+  animation: notice-joyful-pop 420ms ease-out;
+}
+
+.noticeCalm {
+  border-color: var(--c-line);
+  color: var(--c-text-dim);
+}
+
+@keyframes notice-joyful-pop {
+  0% {
+    transform: scale(0.96);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.03);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .noticeJoyful {
+    animation: none;
+  }
+}
+
+/*
  * 失敗の原因そのもの。人向けの案内ではなく機械が吐いた文字列が入るので、
  * .notice(活性色で目を引かせる箱)とは分け、読み取り用の見た目にする。
  * 長い英語が改行なしで来るため折り返しを許す
@@ -78,6 +114,15 @@
   text-align: left;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/*
+ * エラーからの復帰導線(#79)。.stall と違って枠を持たないのは、すぐ上の
+ * .errorDetail が既に箱になっていて、二重の枠を重ねると読みにくいため
+ */
+.retry {
+  display: flex;
+  justify-content: center;
 }
 
 /*

@@ -5,6 +5,7 @@ import { ProgressBar } from "../components/ProgressBar";
 import { DevPanel } from "../components/DevPanel";
 import { JoinQr } from "../components/JoinQr";
 import { useCluster } from "../hooks/useCluster";
+import { useStalled } from "../hooks/useStalled";
 import { useWebrtcSignaling } from "../hooks/useWebrtcSignaling";
 import { usePeerManager } from "../hooks/usePeerManager";
 import { GenerationSupersededError, useRequesterRuntime } from "../hooks/useRequesterRuntime";
@@ -12,11 +13,18 @@ import { createGenerationOwner } from "../webrtc/generationOwner";
 import type { GenerationToken } from "../webrtc/generationOwner";
 import { createAcceptingSignal } from "../hooks/requesterAccepting";
 import { getClientId } from "../lib/clientId";
-import { MODEL_NAME, TOTAL_LAYERS } from "../config";
+import { CONNECT_STALL_MS, MODEL_NAME, TOTAL_LAYERS } from "../config";
 import type { Phase } from "../types/cluster";
 import styles from "./RequesterView.module.css";
 
 type ChatEntry = { role: "user" | "assistant"; text: string };
+
+/**
+ * トースト1件ぶんの中身とトーン(#68)。「人が増えた」は嬉しい出来事、
+ * 「誰か落ちた」は残念な出来事なので、同じ扱いにしない。編成完了などの
+ * 単なる進行の合図は info(装飾なし)にする
+ */
+type Toast = { text: string; tone: "info" | "joyful" | "calm" };
 
 const NOTICE: Partial<Record<Phase, string>> = {
   idle: "サーバーに接続していません",
@@ -26,6 +34,13 @@ const NOTICE: Partial<Record<Phase, string>> = {
   reorganizing: "メンバーが変わったため再編成しています",
   error: "接続に失敗しました",
 };
+
+/**
+ * 配布中が長引いたときの案内(#78)。`NOTICE.connecting` を差し替える形で出す。
+ * 起きていることは「繋がらない参加者を待つのをやめて組み直しを頼んだ」なので、
+ * 配布中の文言のままでは何も起きていないように見える
+ */
+const CONNECT_STALL_NOTICE = "接続できない参加者がいます。編成を組み直しています";
 
 const PEER_STATUS_LABEL: Record<string, string> = {
   connecting: "接続中",
@@ -47,8 +62,15 @@ function describeError(error: unknown): string {
  */
 type GenerationWindow = { token: GenerationToken; text: string };
 
+/** 発表者側のチャットUIと、参加者の接続・再編成状態を表示する。 */
 export function RequesterView() {
-  const { state, dispatch, send, lastMessage, assignments, debug } = useCluster({ enabled: true });
+  // useCluster が初期状態に取り込むので、先に決めておく
+  const [myId] = useState(() => getClientId("requester"));
+  const { state, dispatch, send, lastMessage, assignments, debug } = useCluster({
+    enabled: true,
+    myId,
+    role: "requester",
+  });
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [streaming, setStreaming] = useState("");
   const [generating, setGenerating] = useState(false);
@@ -62,11 +84,11 @@ export function RequesterView() {
   // stateだとクロージャが古い値を掴むため
   const windowRef = useRef<GenerationWindow | null>(null);
   const previousRosterSize = useRef(state.roster.length);
+  const previousConnectStalled = useRef(false);
   // `requester_accepting` の送り直しを決める edge 検出。**描画をまたいで1つ**でないと
   // 毎描画で初期値に戻り、edge として機能しない(`hooks/requesterAccepting.ts`)
   const [acceptingSignal] = useState(() => createAcceptingSignal());
-  const [toast, setToast] = useState<string | null>(null);
-  const [myId] = useState(() => getClientId("requester"));
+  const [toast, setToast] = useState<Toast | null>(null);
 
   /**
    * 生成まわりを初期化する。呼ぶのは3か所:
@@ -89,7 +111,7 @@ export function RequesterView() {
   // 各peerとのDataChannelの上でRPCを話す側(RPCクライアント役)。
   // ①のWASMが起動すると `Module.PeerManager = rpc.manager` が差し込まれる。
   // `onGenerationEvent`(UI用のスタブ)は繋がない。実生成の唯一の経路は
-  // Runtime adapterの `onText` で、スタブが混ざると判定にならない
+  // Runtime adapterの `onText` で、スタブが混ざると判定にならない。
   // 世代の持ち主は**この画面に1つだけ**。Runtimeを立てる側(`useRequesterRuntime`)が
   // claim し、データプレーンを壊す側(`usePeerManager` の `retireCurrent`)が
   // close/detach の**前**に release する。片方だけが持つと、`close()` で起こされた
@@ -124,12 +146,9 @@ export function RequesterView() {
     // 持ち主ではなくなっているので、正しく何もしないから。世代番号は変わらないため
     // 描画中の初期化も走らない。ここが唯一の初期化の口になる。
     //
-    // ⚠️ **既知の限界**: WebSocket が生きたまま DataChannel だけ死に、peer が `ready` の
-    // ままの場合、server は編成を idle に戻すが**顔ぶれが同じなので次の世代を始めない**
-    // (`roster.ts` の failedPeerIds / resetSinceStart、#56)。peer の切断・`error`・
-    // 入り直しのいずれかが要る。peer 画面の「参加し直す」導線(#63)が回復路になる。
-    // 自動復旧させるには `generation_failed` に peerId を載せる必要があり、
-    // server / shared-types の変更を伴うので今回は行わない。
+    // これとは別に、下の `connectStalled` からも `generation_failed` を送る。あちらは
+    // 「相手が黙ったままでICEが諦めるのを待つと30秒以上かかる」ケースの保険で、重複では
+    // ない(2通目はHono側が `phase !== "active"` / 世代不一致で捨てる)。
     onFailed: (generation, message) => {
       windowRef.current = null;
       resetGenerationState(); // generating:false → requester_accepting:true が送り直される
@@ -178,7 +197,12 @@ export function RequesterView() {
     onError: (error) => dispatch({ type: "failed", message: describeError(error) }),
   });
 
-  // 送信できるのは**Runtimeのreadyが解決してから**。作り物の進捗では判断しない
+  // 送信できるのは**Runtimeのreadyが解決してから**。作り物の進捗では判断しない。
+  //
+  // develop 側には「モデル本体はまだ推論に使われていないので、取得に失敗しても送信を
+  // ブロックしない」という判断があったが、**B-1 でその前提は失効した**。いまの
+  // `requester.ready` は「Runtimeがモデルを載せ終えてgenerateできる」の意味で、ここを
+  // 外すと `generate()` が「Runtimeがまだ起動していません」を投げる
   const modelReady = requester.ready;
   const modelProgress = modelReady ? 1 : 0;
   const canSubmit = phase === "active" && modelReady && !generating;
@@ -203,13 +227,31 @@ export function RequesterView() {
     }
   }, [phase, rtc.status, dispatch]);
 
-  // 推論中は新規peerの加入による再編成を保留させる(#50)。生成の開始・終了は
-  // run() 側のタイマーとtoken/generation_end受信の両方から起きるので、
-  // 発生源を1箇所に絞れる generating の変化を見て送る。
+  // 配布中が続くのは、answerを返さないまま黙っている参加者が居るとき。ICEが
+  // 諦めるのを待つと30秒以上かかるので、時間で見切ってHonoに編成のやり直しを頼む
+  // (#78の実機確認)。`useStalled` は watching が false を通ると測り直すので、
+  // 世代をまたいで経過を持ち越さない
+  const connectStalled = useStalled(phase === "connecting", CONNECT_STALL_MS);
+
+  // false→true に変わった1回だけ送る。
   //
-  // 世代交代の初期化と、**現行世代の失敗による drain** で generating が false へ戻った
-  // ぶんも同じ口を通る。通さないと `accepting: false` を送ったきりになり、Hono が
-  // 新規peerを永久に取り込めなくなる
+  // ここでフェーズは動かさない(`dispatch({ type: "failed" })` はしない)。時間切れで
+  // 画面が勝手に別のフェーズへ移ると、遅れて届いた generation_start と食い違う。
+  // 動かすのはHonoが返す generation_aborted で、サーバが唯一の出口という形は変えない。
+  // 古い世代の時間切れは applyGenerationFailed が世代番号を見て捨てる
+  useEffect(() => {
+    if (previousConnectStalled.current === connectStalled) return;
+    previousConnectStalled.current = connectStalled;
+    if (!connectStalled) return;
+    send({ type: "generation_failed", generation: state.generation });
+  }, [connectStalled, send, state.generation]);
+
+  // 推論中は新規peerの加入による再編成を保留させる(#50)。生成の開始・終了は
+  // 送信ボタン・generateの解決・世代交代の初期化・現行世代の失敗によるdrainと複数の
+  // 経路から起きるので、発生源を1箇所に絞れる generating の変化を見て送る。
+  //
+  // **drain のぶんも同じ口を通す。** 通さないと `accepting: false` を送ったきりになり、
+  // Hono が新規peerを永久に取り込めなくなる
   useEffect(() => {
     const accepting = acceptingSignal.next(generating);
     if (accepting === null) return;
@@ -223,22 +265,33 @@ export function RequesterView() {
     if (currentSize === previousSize) return;
 
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast(`${previousSize}台→${currentSize}台に更新`);
+    // 増えたか減ったかだけで見せ方を分ける(#68)。理由の詳細はabortMessage側の
+    // トーストが別途出すので、ここは台数の増減という事実だけを見る
+    setToast({
+      text: `${previousSize}台→${currentSize}台に更新`,
+      tone: currentSize > previousSize ? "joyful" : "calm",
+    });
     toastTimer.current = window.setTimeout(() => setToast(null), 3200);
   }, [state.roster.length]);
 
   useEffect(() => {
-    if (!lastMessage) return;
-    const message =
-      lastMessage.type === "generation_start"
-        ? "編成が完了しました"
-        : lastMessage.type === "generation_aborted"
-          ? lastMessage.message
-          : null;
+    const message = state.abortMessage;
     if (!message) return;
 
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast(message);
+    // 再編成のきっかけが「人が増えた」ことなら祝い、それ以外(誰かが抜けた・
+    // 繋がらなかった)は落ち着いた見せ方に留める(#68)
+    setToast({
+      text: message,
+      tone: state.abortReason === "peer_joined" ? "joyful" : "calm",
+    });
+    toastTimer.current = window.setTimeout(() => setToast(null), 3200);
+  }, [state.abortMessage, state.abortReason]);
+
+  useEffect(() => {
+    if (!lastMessage || lastMessage.type !== "generation_start") return;
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ text: "編成が完了しました", tone: "info" });
     toastTimer.current = window.setTimeout(() => setToast(null), 3200);
   }, [lastMessage]);
 
@@ -291,10 +344,23 @@ export function RequesterView() {
 
   const computingClientId =
     computingIndex === null ? null : (assignments[computingIndex]?.clientId ?? null);
-  const notice = NOTICE[phase];
+  const notice = phase === "connecting" && connectStalled ? CONNECT_STALL_NOTICE : NOTICE[phase];
+  // NOTICEは`active`を持たない(伝えることが無いので箱ごと消す)。読み上げ用は
+  // 箱の有無に関わらず7フェーズすべてを伝えたいので、その1件だけ別に補う(#66)
+  const phaseAnnouncement =
+    phase === "active" ? "接続済みです。プロンプトを送れます" : (notice ?? "");
 
   return (
     <div className={styles.page}>
+      {/*
+        画面の状態(NOTICEと同じ文言)を読み上げるためだけの領域。`.notice` は
+        `active` のとき箱ごと消えるため、見た目とは別に常時マウントしたここへ集約する。
+        テキストが実際に変わったときしかDOMが動かないので、連呼にはならない(#66)
+      */}
+      <div className={styles.srOnly} aria-live="polite" aria-atomic="true">
+        {phaseAnnouncement}
+      </div>
+
       <TopBar
         left={
           <>
@@ -346,9 +412,15 @@ export function RequesterView() {
 
           <div>
             <div className={styles.sectionLabel}>モデル</div>
+            {/*
+              進捗の実測(#80 の `useModelDownload`)はここへ繋いでいない。**Runtimeが
+              同じGGUFを自分で取りに行くので、繋ぐと491MBを二重に引く**(B-1以降)。
+              いまはRuntimeのreadyだけを見せる。実測の進捗を出すなら、Runtime側が
+              ダウンロードの進捗を報せられるようになってから繋ぐ
+            */}
             <ProgressBar value={modelProgress} label="モデルのダウンロード" />
             <div className={styles.dim}>
-              {modelReady ? "読み込み済み" : `${Math.round(modelProgress * 100)}%`}
+              {modelReady ? "読み込み済み" : "Runtimeの準備を待っています"}
             </div>
           </div>
 
@@ -372,11 +444,17 @@ export function RequesterView() {
 
         <section className={styles.chat}>
           {toast && (
-            <div className={styles.toast} role="status">
-              {toast}
+            <div
+              className={`${styles.toast} ${toast.tone === "joyful" ? styles.toastJoyful : toast.tone === "calm" ? styles.toastCalm : ""}`}
+              role="status"
+            >
+              {toast.text}
             </div>
           )}
           {notice && <div className={styles.notice}>{notice}</div>}
+          {phase === "error" && state.errorMessage && (
+            <p className={styles.errorDetail}>{state.errorMessage}</p>
+          )}
           <div className={styles.log}>
             {chat.map((m, i) => (
               <div key={i} className={m.role === "user" ? styles.user : styles.assistant}>

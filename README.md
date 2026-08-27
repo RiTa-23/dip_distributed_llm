@@ -6,7 +6,7 @@
 
 - **requester**(推論リクエスト元・1人固定): WASM版llama.cpp(rpc-client役)を実行し、各peerとWebRTC DataChannelで直接通信してトークン生成をブラウザ内で完結させる
 - **peer**(計算リソース提供・複数・動的増減): WASM版llama.cpp(rpc-server役)を実行し、requesterから受け取った層の計算を担当する
-- **Hono**(コーディネータ): 静的配信(React成果物・GGUF・WASM)、`/ws`での制御メッセージ・WebRTCシグナリング取り次ぎ、ロスター管理のみを行う。実データ(モデル重み・テンソル)はHonoを経由せず、requester⇔peer間のWebRTC DataChannelでP2P通信する
+- **Hono**(コーディネータ): 静的配信(React成果物・GGUF・WASM)、`/ws`での制御メッセージ・WebRTCシグナリング取り次ぎ、ロスター管理を行う。Honoが運ぶのは `/ws` の制御メッセージと `/models/*` の **GGUF**(HTTP の HEAD / Range)の2つで、**Runtime間のRPCデータ(peerの担当層の重み・テンソル)はHonoを経由せず**、requester⇔peer間のWebRTC DataChannelを流れる。経路はdirectを優先し、成立しないときは会場LAN内のTURNによるrelayを許可する(**TURN経由でもHonoはRPCを中継しない**)。GGUFもRPCも会場LANの外へは出さない
 
 星型トポロジー(requesterが全peerに個別接続、peer間の直接通信はなし)、会場LAN内完結(クラウドサービス不使用)、推論リクエストは同時1人固定が設計上の前提。詳細は [docs/requirements.md](./docs/requirements.md) を参照。
 

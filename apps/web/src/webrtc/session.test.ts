@@ -361,6 +361,26 @@ describe("createPeerSession", () => {
     // 相手ごとの detach 通知のまま。セッションも畳まない
     expect(session.expectedIds()).toEqual(["c-req"]);
   });
+
+  test("connectionState が failed なら、発表者との接続失敗として上げる", async () => {
+    // 文言を固定する。TURN を入れた後は `iceTransportPolicy: "all"` なので
+    // 「直接接続」限定の言い方にしておけない(relay も候補になり得る)。
+    // requester 側は固定済みだったが peer 側が抜けていた
+    const { pc, r, session } = build();
+    session.accept(offerFrom("c-req", "c-peer"));
+    pc.resolveRemote();
+    await flush();
+
+    pc.connectionState = "failed";
+    pc.onconnectionstatechange?.();
+
+    expect(r.failed).toEqual([
+      { generation: 3, remoteId: "c-req", message: "発表者との接続に失敗しました" },
+    ]);
+    // peer は long-lived。失敗を上げてもセッションは畳まない
+    expect(r.closed).toEqual([]);
+    expect(session.expectedIds()).toEqual(["c-req"]);
+  });
 });
 
 describe("createRequesterSession", () => {

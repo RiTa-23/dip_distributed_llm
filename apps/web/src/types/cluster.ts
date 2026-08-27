@@ -1,6 +1,7 @@
 import type {
   GenerationAbortedMessage,
   PeerInfo,
+  Role,
 } from "@dip_distributed_llm/shared-types/messages";
 
 /**
@@ -57,6 +58,23 @@ export type ClusterState = {
    * 編成が終わったら(次の世代が始まったら)null に戻す
    */
   abortReason: AbortReason | null;
+  /**
+   * 現在の世代の編成に入っているpeerのID(generation_startのpeerIdsをそのまま持つ)。
+   * roster(参加者一覧)には status: "error" のpeerも含まれるため、層の割り当ては
+   * これで絞り込んだpeerに対してのみ行う(#81)
+   */
+  generationPeerIds: string[];
+  abortMessage: string | null;
+  /**
+   * 自分のclientId。generation_start の peerIds に自分が居るかの判定に使う。
+   * 実際の値は useCluster が遅延初期化で入れる(既定の空文字は誰とも一致しない)
+   */
+  myId: string;
+  /**
+   * 自分の役割。requesterは peerIds に載らないため、編成外かどうかの判定は
+   * peer のときだけ行う
+   */
+  role: Role;
 };
 
 export const initialClusterState: ClusterState = {
@@ -65,4 +83,8 @@ export const initialClusterState: ClusterState = {
   generation: 0,
   errorMessage: null,
   abortReason: null,
+  generationPeerIds: [],
+  abortMessage: null,
+  myId: "",
+  role: "peer",
 };
