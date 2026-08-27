@@ -3,12 +3,17 @@
 // `hono/bun` の `serveStatic` は `/models/*` に対して
 //
 //   HEAD → 200 だが `content-length: 0`
-//   GET  → 200 だが `Transfer-Encoding: chunked`(Content-Length 無し・Accept-Ranges 無し)
-//   Range → 206 にならず全body を流す
+//   GET  → 200 だが `Accept-Ranges` を名乗らない
 //
 // を返す(#B-1 で実測)。Runtime adapter はモデルURLに対してまず HEAD を投げ、
 // `Content-Length` からファイルサイズを決めるので、`0` が返るとその時点で失敗する。
-// さらに Range が無いと、起動のたびに GGUF 全体を IndexedDB へ先読みすることになる。
+// **これ単独で専用handlerを置く決定的な理由になる。**
+//
+// なお「Range が 206 にならない」は serveStatic 自体の性質ではなかった。Bun は BunFile
+// backed Response に 206/416 を自動で返す。B-1 で見えた症状は、確定後の `c.header()` が
+// Response を組み直して body が範囲を失っていた二次症状(`index.ts` の COOP/COEP 参照)。
+// それでもここで Range/416 を自前で組むのは、Bun の暗黙の振る舞いに依存させず
+// 単体テストで固められる形にするため。
 //
 // ここが受け持つのは `/models/<name>` の1階層だけ。ディレクトリを掘らせないので、
 // パスの正規化は「1セグメントであること」を確かめるだけで足りる。

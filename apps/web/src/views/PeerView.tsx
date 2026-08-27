@@ -66,6 +66,10 @@ const REORGANIZING_TEXT: Record<AbortReason, { hint: string; notice: string }> =
     hint: "参加者が減りました",
     notice: "抜けたぶんを埋めて組み直しています",
   },
+  connection_failed: {
+    hint: "接続がうまくいきませんでした",
+    notice: "つながる相手だけで組み直しています",
+  },
 };
 
 const REORGANIZING_FALLBACK = {
@@ -119,11 +123,34 @@ export function PeerView() {
   // 止まる。時間で気づけるようにして、繋ぎ直しの導線を出す(#63)
   const reorganizingStalled = useStalled(phase === "reorganizing", REORGANIZING_STALL_MS);
 
+  /**
+   * この端末が計算に参加できなくなったことを伝える。**画面をerrorにするだけでは足りない**(#79)。
+   *
+   * Honoは `status: "error"` のpeerを次の編成から外す(#57)。送らないとこのpeerは
+   * `connecting` のままロスターに残り、サーバの `eligiblePeerIds` は「準備中の人がいる」
+   * として待ち続けるため、**部屋全体が次の世代へ進めなくなる**。
+   *
+   * 失敗の出どころは3つあり、どれも「計算に参加できない」点では同じなので1本にまとめる。
+   *   - PeerManager (DataChannel上のRPC)
+   *   - WebRTC 接続そのもの
+   *   - Runtime の起動・実行 (B-1で入った実 WASM 経路)
+   *
+   * 同じ失敗で複数回送られてもよい。サーバ側は同じ `error` を重ねて受けても
+   * 状態が変わらず、世代開始のループにもならない(`roster.test.ts` で固定)。
+   */
+  const reportPeerError = useCallback(
+    (message: string) => {
+      dispatch({ type: "failed", message });
+      send({ type: "peer_status", status: "error", errorMessage: message });
+    },
+    [dispatch, send],
+  );
+
   // 発表者とのDataChannelの上でRPCを話す側。①のWASMが起動すると
   // `Module.PeerManager = rpc.manager` が差し込まれる(`useWasmEngine`)。
   // `releaseBuf` は渡さない(受信バッファの所有権はWASMのglue側。handoff契約)
   const rpc = usePeerManager({
-    onError: (message) => dispatch({ type: "failed", message }),
+    onError: reportPeerError,
   });
 
   // 稼働中の計測。数えているのは PeerManager 側で、ここは250msごとに読むだけ
@@ -138,7 +165,7 @@ export function PeerView() {
     lastMessage,
     send,
     ...rpc.handlers,
-    onFailed: (message) => dispatch({ type: "failed", message }),
+    onFailed: reportPeerError,
   });
   const progress = CONNECT_PROGRESS[rtc.status];
 
@@ -171,7 +198,7 @@ export function PeerView() {
     // Runtimeのstdout/stderr。画面には出さないが、層の割り当てやRPCの様子は
     // ここにしか出ないので、コンソールでは追えるようにしておく
     onLog: (line) => console.info(`[runtime] ${line}`),
-    onError: (error) => dispatch({ type: "failed", message: describeError(error) }),
+    onError: (error) => reportPeerError(describeError(error)),
   });
 
   // 自分がロスターに載ったか。`socket_closed` でロスターは空になるので、

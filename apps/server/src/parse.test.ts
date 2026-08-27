@@ -83,3 +83,33 @@ describe("parseClientMessage", () => {
     });
   });
 });
+
+describe("generation_failed(#56)", () => {
+  test("正しい形は通す", () => {
+    expect(parseClientMessage({ type: "generation_failed", generation: 3 })).toEqual({
+      type: "generation_failed",
+      generation: 3,
+    });
+  });
+
+  test("世代0も有効", () => {
+    expect(parseClientMessage({ type: "generation_failed", generation: 0 })).toEqual({
+      type: "generation_failed",
+      generation: 0,
+    });
+  });
+
+  test("generation が無い", () => {
+    expect(parseClientMessage({ type: "generation_failed" })).toBeNull();
+  });
+
+  test("generation が数値でない", () => {
+    expect(parseClientMessage({ type: "generation_failed", generation: "3" })).toBeNull();
+  });
+
+  test("小数・NaN・負数は弾く(現世代との比較が常に外れるため)", () => {
+    expect(parseClientMessage({ type: "generation_failed", generation: 1.5 })).toBeNull();
+    expect(parseClientMessage({ type: "generation_failed", generation: NaN })).toBeNull();
+    expect(parseClientMessage({ type: "generation_failed", generation: -1 })).toBeNull();
+  });
+});

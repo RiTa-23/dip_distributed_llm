@@ -20,21 +20,63 @@ const KEY = "./certs/key.pem";
 const hasTls = existsSync(CERT) && existsSync(KEY);
 const port = Number(process.env.PORT ?? (hasTls ? 8443 : 3000));
 
+// --- 接続の生存確認(#55) ---
+// 蓋を閉じたPCやWi-Fiが切れた端末は FIN を送らないため、TCPが死ぬまで onClose が来ない。
+// その間ロスターに残り続け、「全員ready」の判定が実態とずれる。
+//
+// Bunの `idleTimeout` は当てにしない(実測で、無応答の接続を閉じてくれなかった)。
+// 代わりにpingを撃って pong の有無を自分で数える。ブラウザはpingに自動でpongを
+// 返すので、フロント側の実装は要らない。
+// 検知までは最長で間隔の2倍かかる(1回落としただけでは切らないため)。
+const WS_PING_INTERVAL_SEC = Number(process.env.WS_PING_INTERVAL_SEC ?? 30);
+const WS_PING_INTERVAL_MS = Math.max(1000, WS_PING_INTERVAL_SEC * 1000);
+
+/**
+ * 接続ごとの応答状況。キーはBunの ServerWebSocket そのもの。
+ * WeakMap にしておくと、接続が消えたときに一緒に回収される。
+ */
+const awaitingPong = new WeakMap<object, { pending: boolean }>();
+
+/** Honoの型には出てこないが、Bunの ServerWebSocket が持っているもの。 */
+type PingableSocket = { ping: () => void; close: (code?: number, reason?: string) => void };
+
+function asPingable(raw: unknown): PingableSocket | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const c = raw as Partial<PingableSocket>;
+  return typeof c.ping === "function" && typeof c.close === "function"
+    ? (c as PingableSocket)
+    : null;
+}
+
 // すべてのレスポンスに COOP/COEP を付与する(#13)。
 // WASM版llama.cppがpthread(SharedArrayBuffer)を使うため cross-origin isolation が必須。
 // secure context(HTTPS)と合わせて初めて crossOriginIsolated === true になる。
-// ⚠️ ヘッダは `next()` の**前**に宣言する。`await next()` のあとに `c.header()` すると
-// Honoが確定済みResponseを組み直すため、`BunFile.slice()` のbodyが範囲を失って
-// ファイル全体になり、Content-Length も落ちる(#B-1で実測)。
-// 先に宣言しておけばHonoが作るResponse(serveStatic・404含む)にはそのまま載る。
-// ハンドラが生のResponseを返す経路(モデル配信)だけは、その場で自分で載せる。
+//
+// ここで `c.header()` を使ってはいけない(#53 / #B-1 で別々に実測)。hono の `c.header()` は
+// `finalized` なら無条件に `new Response(#res.body, #res)` で確定済みResponseを組み直す
+// (hono 4.13.3 / `dist/context.js` の `header`)。その過程で本文が ReadableStream に化け、
+//   - `Content-Length` が落ちて全レスポンスがチャンク転送になる(進捗の分母が出せない)
+//   - `BunFile.slice()` のbodyが範囲を失い、数バイトの Range 要求に全ファイルを返す
+// という症状になる。
+//
+// `c.res` の getter は `#res` をそのまま返す(組み直さない)ので、既存の Headers を
+// 直接書き換えれば本文も `Content-Length` もそのまま通る。**この形なら、ハンドラが
+// 返した生のResponse(モデル配信)にも Hono が作ったResponseにも等しく載る**。
+// 逆に `next()` の前で宣言する形は `#preparedHeaders` にしか入らず、生のResponse経路で
+// 無言で落ちる(実測済み)ので採らない。
 app.use("*", async (c, next) => {
-  c.header("Cross-Origin-Opener-Policy", "same-origin");
-  c.header("Cross-Origin-Embedder-Policy", "require-corp");
   await next();
+  c.res.headers.set("Cross-Origin-Opener-Policy", "same-origin");
+  c.res.headers.set("Cross-Origin-Embedder-Policy", "require-corp");
 });
 
-/** 生のResponseを返す経路が自分で載せるぶん。上のミドルウェアと同じ値 */
+/**
+ * 生のResponseを作る経路がその場で載せるぶん。上のミドルウェアと同じ値。
+ *
+ * 上の `c.res.headers.set()` 形式なら生のResponseにも載るので、これは保険。
+ * handler 単体で見ても正しいResponseになるようにしておき、middlewareの登録順に
+ * 依存させない。`set` なので二重にはならない。
+ */
 const ISOLATION_HEADERS = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "require-corp",
@@ -58,6 +100,24 @@ app.get(
               ws.send(d);
             } catch {
               // 送信先が閉じかけ。無視して他の宛先を続行。
+            }
+          },
+          ping: () => {
+            const sock = asPingable(ws.raw);
+            if (!sock) return;
+            const state = awaitingPong.get(sock) ?? { pending: false };
+            awaitingPong.set(sock, state);
+            try {
+              if (state.pending) {
+                // 前回のpingにpongが返っていない。応答が途絶えたとみなして閉じる。
+                // close すると onClose が走り、ロスターからも外れる(#55)
+                sock.close(1001, "no pong");
+                return;
+              }
+              state.pending = true;
+              sock.ping();
+            } catch {
+              // 既に閉じかけ。次の巡回か onClose で片付く
             }
           },
         };
@@ -85,10 +145,15 @@ app.get(
             if (clientId) coordinator.peerStatus(clientId, msg.status); // hello 前は無視
             break;
           case "webrtc_signal":
-            if (clientId) coordinator.signal(msg);
+            // fromId が本人かどうかは roster 側で見る(#54)
+            if (clientId) coordinator.signal(clientId, msg);
             break;
           case "requester_accepting":
             if (clientId) coordinator.requesterAccepting(clientId, msg.accepting);
+            break;
+          case "generation_failed":
+            // requester かどうか・世代が合っているかは roster 側で見る(#56)
+            if (clientId) coordinator.generationFailed(clientId, msg.generation);
             break;
         }
       },
@@ -113,9 +178,25 @@ app.get("/join-info", (c) =>
 // マウント順が重要: models / wasm を先に処理し、最後に web-dist(SPA)へフォールバックする。
 // モデル(GGUF)・WASMグルーコードは ./public から配信。
 // 実データ(テンソル)は WebRTC P2P で流れるため Hono は中継しない(AGENTS.md 前提2)。
-// GGUFだけは serveStatic より前に自前で返す(#B-1)。serveStatic は
-// `content-length: 0` を返し Range も 206 にしないため、Runtime adapter が
-// HEAD でモデルサイズを決められず、URL経路のモデル読み込みがそもそも成立しない。
+// Range に対応していることを明示する。`serveStatic` は Range 要求に 206 を返せるが
+// `Accept-Ranges` は付けないため、クライアントが試す前に判断できない(#53)。
+// 下の専用handlerより**先に**登録する。こうしておくと、専用handlerが担当外にした
+// `/models/*`(serveStatic fallback や 404)にも載る。
+app.use("/models/*", async (c, next) => {
+  await next();
+  c.res.headers.set("Accept-Ranges", "bytes");
+});
+app.use("/wasm/*", async (c, next) => {
+  await next();
+  c.res.headers.set("Accept-Ranges", "bytes");
+});
+// GGUFだけは serveStatic より前に自前で返す(#B-1)。決め手は **HEAD** で、
+// serveStatic は HEAD に `content-length: 0` を返すため Runtime adapter がモデルサイズを
+// 決められず、URL経路のモデル読み込みがそもそも成立しない。
+// (Range については Bun が BunFile backed Response に 206/416 を自動で返す。B-1 で見えた
+//  「Range が効かない」は上の `c.header()` によるResponse組み直しの二次症状だった。
+//  それでもここで自前に返すのは、HEAD の件と、Range/416 を Bun の暗黙の振る舞いに依存させず
+//  単体テストで固められる形にするため。)
 // ここが受け持つのは `/models/<name>` の1階層だけで、汎用の静的配信ではない。
 const modelLookup = bunModelLookup("./public/models");
 // middlewareではなくrouteとして登録する。`app.use` で返すと後段の serveStatic まで
@@ -137,6 +218,9 @@ app.use("/*", serveStatic({ root: "./public/web-dist" }));
 // /models・/wasm は上で処理済みなのでここには来ない。
 app.get("*", serveStatic({ path: "./public/web-dist/index.html" }));
 
+// 生きている接続の idleTimeout を延ばし、応答の無い接続を炙り出す(#55)
+setInterval(() => coordinator.pingAll(), WS_PING_INTERVAL_MS);
+
 console.log(
   `Hono server listening on ${hasTls ? "https" : "http"}://localhost:${port} (tls=${hasTls})`,
 );
@@ -144,6 +228,13 @@ console.log(
 export default {
   port,
   fetch: app.fetch,
-  websocket,
+  websocket: {
+    ...websocket,
+    // pong を受けたら「応答あり」に戻す(#55)。Honoのハンドラには無いので足す
+    pong(ws: object) {
+      const state = awaitingPong.get(ws);
+      if (state) state.pending = false;
+    },
+  },
   ...(hasTls ? { tls: { cert: Bun.file(CERT), key: Bun.file(KEY) } } : {}),
 };

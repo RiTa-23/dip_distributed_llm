@@ -41,11 +41,20 @@ export type RequesterAcceptingMessage = {
   accepting: boolean;
 };
 
+export type GenerationFailedMessage = {
+  // requesterのみ送信可。generation_start を受けたあと、WebRTC接続やモデル配布に
+  // 失敗して編成が成立しなかったことを伝える。Honoはこれを受けて idle に戻す。
+  // これが無いと、切断が起きるまで active のまま固まる。
+  type: "generation_failed";
+  generation: number;
+};
+
 export type ClientMessage =
   | HelloMessage
   | PeerStatusMessage
   | WebrtcSignalMessage
-  | RequesterAcceptingMessage;
+  | RequesterAcceptingMessage
+  | GenerationFailedMessage;
 
 // ---------- サーバ → クライアント ----------
 export type RosterUpdateMessage = {
@@ -65,7 +74,8 @@ export type GenerationAbortedMessage = {
   generation: number;
   // peer_disconnected: 既存peerの切断で編成が壊れた
   // peer_joined: 生成中に新規peerがreadyになり、Honoが能動的に組み直した(acceptingGrowth時)
-  reason: "peer_disconnected" | "peer_joined";
+  // connection_failed: requesterが generation_failed を送ってきた(編成が成立しなかった)
+  reason: "peer_disconnected" | "peer_joined" | "connection_failed";
   message: string;
 };
 

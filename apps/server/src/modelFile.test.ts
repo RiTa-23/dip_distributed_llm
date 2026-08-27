@@ -2,9 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { handleModelRequest, modelNameFromPath, parseRange } from "./modelFile";
 import type { ModelFile, ModelFileLookup } from "./modelFile";
 
-// `serveStatic` が `/models/*` に対して `content-length: 0` を返し、Range も 206 に
-// しないことが Gate B-1 で実測された。Runtime adapter は HEAD の `Content-Length` から
-// モデルサイズを決めるので、そこが 0 だと URL 経路のモデル読み込みが成立しない。
+// `serveStatic` が `/models/*` の **HEAD** に `content-length: 0` を返すことが Gate B-1 で
+// 実測された。Runtime adapter は HEAD の `Content-Length` からモデルサイズを決めるので、
+// そこが 0 だと URL 経路のモデル読み込みが成立しない。これが専用handlerを置く理由。
+// (Range については Bun が BunFile backed Response に 206/416 を自動で返す。B-1 で
+//  「Range が効かない」と見えたのは、確定後の `c.header()` による Response 組み直しの
+//  二次症状だった。ここで自前に組むのは、その暗黙の振る舞いに依存しないため。)
 // ここで見るのは HEAD / 206 / 416 と、掘らせないこと。
 
 const SIZE = 491_400_032;

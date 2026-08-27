@@ -51,6 +51,7 @@ export function RequesterView() {
   const generationActiveRef = useRef(false);
   const generationTextRef = useRef("");
   const previousRosterSize = useRef(state.roster.length);
+  const previousGenerating = useRef(generating);
   const [toast, setToast] = useState<string | null>(null);
   const [myId] = useState(() => getClientId("requester"));
 
@@ -72,7 +73,13 @@ export function RequesterView() {
     lastMessage,
     send,
     ...rpc.handlers,
-    onFailed: (message) => dispatch({ type: "failed", message }),
+    // 失敗を伝えないと、Hono は active のまま固まって誰かの切断待ちになる(#78)。
+    // 世代番号は useWebrtcSignaling が古い世代の失敗を既に落としているので、
+    // コールバックが届いた時点の state.generation が現在の世代と一致する
+    onFailed: (message) => {
+      dispatch({ type: "failed", message });
+      send({ type: "generation_failed", generation: state.generation });
+    },
   });
   const distribution =
     rtc.expectedIds.length === 0 ? 0 : rtc.openIds.length / rtc.expectedIds.length;
@@ -123,6 +130,15 @@ export function RequesterView() {
       dispatch({ type: "datachannel_open" });
     }
   }, [phase, rtc.status, dispatch]);
+
+  // 推論中は新規peerの加入による再編成を保留させる(#50)。生成の開始・終了は
+  // run() 側のタイマーとtoken/generation_end受信の両方から起きるので、
+  // 発生源を1箇所に絞れる generating の変化を見て送る
+  useEffect(() => {
+    if (previousGenerating.current === generating) return;
+    previousGenerating.current = generating;
+    send({ type: "requester_accepting", accepting: !generating });
+  }, [generating, send]);
 
   useEffect(() => {
     const currentSize = state.roster.length;

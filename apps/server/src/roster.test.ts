@@ -5,6 +5,7 @@ import type {
 } from "@dip_distributed_llm/shared-types/messages";
 import {
   applyDisconnect,
+  applyGenerationFailed,
   applyHello,
   applyPeerStatus,
   applyRequesterAccepting,
@@ -245,12 +246,314 @@ describe("webrtc_signal 中継", () => {
   test("既知の targetId には unicast Effect を返す", () => {
     const s = createState();
     applyHello(s, "p1", "peer", "P1");
-    const eff = applySignal(s, signal);
+    const eff = applySignal(s, "req", signal);
     expect(eff).toEqual([{ kind: "unicast", targetId: "p1", msg: signal }]);
   });
 
   test("未知の targetId は破棄(例外を投げない)", () => {
     const s = createState();
-    expect(applySignal(s, signal)).toEqual([]);
+    expect(applySignal(s, "req", signal)).toEqual([]);
+  });
+
+  test("fromId が送信者と違えば中継しない(なりすまし防止 #54)", () => {
+    const s = createState();
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "req", "requester", "Req");
+    // 送信者は attacker なのに fromId は req を騙っている
+    expect(applySignal(s, "attacker", signal)).toEqual([]);
+  });
+
+  test("なりすましは宛先が存在していても中継しない", () => {
+    const s = createState();
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "attacker", "peer", "Atk");
+    expect(applySignal(s, "attacker", signal)).toEqual([]);
+  });
+
+  test("自分名義なら向きを問わず中継する(peer→requester も通る)", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    const fromPeer: WebrtcSignalMessage = {
+      type: "webrtc_signal",
+      targetId: "req",
+      fromId: "p1",
+      payload: { kind: "answer", sdp: "v=0..." },
+    };
+    expect(applySignal(s, "p1", fromPeer)).toEqual([
+      { kind: "unicast", targetId: "req", msg: fromPeer },
+    ]);
+  });
+});
+
+describe("errorのpeerを編成から外す(#57)", () => {
+  test("1台がerrorでも、残りのreadyな人だけで世代が始まる", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "p2", "peer", "P2");
+    applyPeerStatus(s, "p1", "ready");
+    const eff = applyPeerStatus(s, "p2", "error");
+
+    const start = firstOf(eff, "generation_start");
+    expect(start).toBeDefined();
+    expect(start?.peerIds).toEqual(["p1"]); // errorのp2は含めない
+  });
+
+  test("connecting の人がいるあいだは待つ(準備中を置き去りにしない)", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "p2", "peer", "P2");
+    const eff = applyPeerStatus(s, "p1", "ready"); // p2 はまだ connecting
+    expect(firstOf(eff, "generation_start")).toBeUndefined();
+  });
+
+  test("全員がerrorなら世代を始めない", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    const eff = applyPeerStatus(s, "p1", "error");
+    expect(firstOf(eff, "generation_start")).toBeUndefined();
+  });
+
+  test("errorから復帰してreadyを送り直すと編成に戻る", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "p2", "peer", "P2");
+    applyPeerStatus(s, "p1", "ready");
+    applyPeerStatus(s, "p2", "error"); // gen 1 は p1 だけで開始
+    const eff = applyPeerStatus(s, "p2", "ready"); // 復帰
+
+    const start = firstOf(eff, "generation_start");
+    expect(start?.peerIds.sort()).toEqual(["p1", "p2"]);
+  });
+});
+
+describe("generation_failed による復帰(#56)", () => {
+  /** requester と2台のpeerで世代1を開始した状態を作る。 */
+  function started() {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "p2", "peer", "P2");
+    applyPeerStatus(s, "p1", "ready");
+    applyPeerStatus(s, "p2", "ready");
+    expect(s.phase).toBe("active");
+    expect(s.generation).toBe(1);
+    return s;
+  }
+
+  test("requesterからの通知で idle に戻り、中断を全員に知らせる", () => {
+    const s = started();
+    const eff = applyGenerationFailed(s, "req", 1);
+
+    const aborted = firstOf(eff, "generation_aborted");
+    expect(aborted?.reason).toBe("connection_failed");
+    expect(aborted?.generation).toBe(1); // 中断した現世代の番号
+    expect(s.phase).toBe("idle");
+  });
+
+  test("同じ顔ぶれのままでは組み直さない(失敗の繰り返しを防ぐ)", () => {
+    const s = started();
+    const eff = applyGenerationFailed(s, "req", 1);
+    expect(firstOf(eff, "generation_start")).toBeUndefined();
+    expect(s.generation).toBe(1); // 世代番号も進めない
+  });
+
+  test("顔ぶれが変われば組み直す", () => {
+    const s = started();
+    applyGenerationFailed(s, "req", 1);
+    // 失敗したp2がerrorを報告 → 顔ぶれが p1 だけに変わる
+    const eff = applyPeerStatus(s, "p2", "error");
+
+    const start = firstOf(eff, "generation_start");
+    expect(start?.peerIds).toEqual(["p1"]);
+    expect(s.generation).toBe(2);
+  });
+
+  test("新しい参加者が来ても顔ぶれが変わるので組み直す", () => {
+    const s = started();
+    applyGenerationFailed(s, "req", 1);
+    applyHello(s, "p3", "peer", "P3");
+    const eff = applyPeerStatus(s, "p3", "ready");
+
+    const start = firstOf(eff, "generation_start");
+    expect(start?.peerIds.sort()).toEqual(["p1", "p2", "p3"]);
+  });
+
+  test("requester以外からの送信は無視する", () => {
+    const s = started();
+    expect(applyGenerationFailed(s, "p1", 1)).toEqual([]);
+    expect(s.phase).toBe("active");
+  });
+
+  test("未知のクライアントからの送信は無視する", () => {
+    const s = started();
+    expect(applyGenerationFailed(s, "unknown", 1)).toEqual([]);
+    expect(s.phase).toBe("active");
+  });
+
+  test("古い世代の通知は無視する(遅れて届いた分で現世代を壊さない)", () => {
+    const s = started();
+    expect(applyGenerationFailed(s, "req", 0)).toEqual([]);
+    expect(s.phase).toBe("active");
+    expect(s.generation).toBe(1);
+  });
+
+  test("idle 中の通知は無視する", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    expect(s.phase).toBe("idle");
+    expect(applyGenerationFailed(s, "req", 0)).toEqual([]);
+  });
+
+  test("失敗の記録は次の世代が始まると消える", () => {
+    const s = started();
+    applyGenerationFailed(s, "req", 1);
+    expect(s.failedPeerIds).toEqual(["p1", "p2"]);
+    applyHello(s, "p3", "peer", "P3");
+    applyPeerStatus(s, "p3", "ready"); // 顔ぶれが変わって gen 2 開始
+    expect(s.failedPeerIds).toBeNull();
+  });
+
+  test("切断は failedPeerIds に関係なく従来通り再編成する(非退行)", () => {
+    const s = started();
+    applyGenerationFailed(s, "req", 1); // p1,p2 で失敗を記録
+    const eff = applyDisconnect(s, "p2"); // 顔ぶれが p1 だけになる
+    const start = firstOf(eff, "generation_start");
+    expect(start?.peerIds).toEqual(["p1"]);
+  });
+});
+
+// #56 は「同じ壊れた編成を即座に無限retryしない」ためのもので、そこは保つ。
+// ただし peer が1台だけの部屋では、error → ready も入り直しも結局は同じ顔ぶれに戻るため、
+// 顔ぶれだけを見ていると一度失敗した部屋が永久に組み直せなくなる。
+//
+// **`generation_failed`(requesterのWS)と `peer_status: error`(peerのWS)は別の接続から
+// 来るので到着順は保証されない。** どちらが先でも同じ結論になることを両向きで固定する。
+describe("失敗した編成のやり直し(1台構成の復帰)", () => {
+  /** requester と peer 1台で世代1を開始し、その世代を失敗させた状態。 */
+  function failedWithOnePeer() {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyPeerStatus(s, "p1", "ready");
+    expect(s.phase).toBe("active");
+    expect(s.generation).toBe(1);
+    applyGenerationFailed(s, "req", 1);
+    expect(s.phase).toBe("idle");
+    return s;
+  }
+
+  test("generation_failed → error → ready で組み直す", () => {
+    const s = failedWithOnePeer();
+    applyPeerStatus(s, "p1", "error");
+    const eff = applyPeerStatus(s, "p1", "ready");
+
+    const start = firstOf(eff, "generation_start");
+    expect(start?.peerIds).toEqual(["p1"]);
+    expect(s.generation).toBe(2);
+  });
+
+  test("error → generation_failed → ready でも組み直す(到着順が逆)", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyPeerStatus(s, "p1", "ready"); // 世代1開始
+    applyPeerStatus(s, "p1", "error"); // peer の失敗が先に届く
+    applyGenerationFailed(s, "req", 1); // requester の失敗が後から届く
+    const eff = applyPeerStatus(s, "p1", "ready");
+
+    const start = firstOf(eff, "generation_start");
+    expect(start?.peerIds).toEqual(["p1"]);
+    expect(s.generation).toBe(2);
+  });
+
+  test("generation_failed → 同じclientIdで入り直し → ready で組み直す", () => {
+    const s = failedWithOnePeer();
+    applyHello(s, "p1", "peer", "P1"); // connecting に戻る
+    expect(s.generation).toBe(1); // 入り直した直後はまだ始まらない
+    const eff = applyPeerStatus(s, "p1", "ready");
+
+    expect(firstOf(eff, "generation_start")?.peerIds).toEqual(["p1"]);
+    expect(s.generation).toBe(2);
+  });
+
+  test("入り直し → generation_failed → ready でも組み直す(到着順が逆)", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyPeerStatus(s, "p1", "ready"); // 世代1開始
+    applyHello(s, "p1", "peer", "P1"); // 入り直しが先
+    applyGenerationFailed(s, "req", 1); // 失敗の記録が後
+    const eff = applyPeerStatus(s, "p1", "ready");
+
+    expect(firstOf(eff, "generation_start")?.peerIds).toEqual(["p1"]);
+    expect(s.generation).toBe(2);
+  });
+
+  test("ready を送り直しただけでは組み直さない(即時retry防止は維持)", () => {
+    const s = failedWithOnePeer();
+    const eff = applyPeerStatus(s, "p1", "ready");
+
+    expect(firstOf(eff, "generation_start")).toBeUndefined();
+    expect(s.generation).toBe(1);
+    expect(s.phase).toBe("idle");
+  });
+
+  test("error を受けた時点では組み直さない(復帰してから)", () => {
+    const s = failedWithOnePeer();
+    const eff = applyPeerStatus(s, "p1", "error");
+
+    expect(firstOf(eff, "generation_start")).toBeUndefined();
+    expect(s.phase).toBe("idle");
+  });
+
+  test("requesterが入り直しただけでは解除しない", () => {
+    // `useHonoSocket` はWebSocketが切れると自動で繋ぎ直し、hello まで送る。
+    // requester の hello を解除条件にすると、制御プレーンが一瞬切れただけで
+    // #56 の即時retry抑止を破れてしまう
+    const s = failedWithOnePeer();
+    applyHello(s, "req", "requester", "Req");
+    const eff = applyPeerStatus(s, "p1", "ready");
+
+    expect(firstOf(eff, "generation_start")).toBeUndefined();
+    expect(s.generation).toBe(1);
+  });
+
+  test("2台のうち1台がerrorなら、残りで組み直す", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "p2", "peer", "P2");
+    applyPeerStatus(s, "p1", "ready");
+    applyPeerStatus(s, "p2", "ready");
+    applyGenerationFailed(s, "req", 1);
+    const eff = applyPeerStatus(s, "p2", "error");
+
+    expect(firstOf(eff, "generation_start")?.peerIds).toEqual(["p1"]);
+    expect(s.generation).toBe(2);
+  });
+
+  test("同じerrorが何度来ても世代開始のループにならない", () => {
+    // #79 は PeerManager / WebRTC / Runtime の3経路から error を送る。
+    // 1つの失敗で複数回届いても、状態機械が壊れないこと
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "p2", "peer", "P2");
+    applyPeerStatus(s, "p1", "ready");
+    applyPeerStatus(s, "p2", "ready");
+    applyGenerationFailed(s, "req", 1);
+
+    const first = applyPeerStatus(s, "p2", "error");
+    expect(firstOf(first, "generation_start")?.peerIds).toEqual(["p1"]);
+    expect(s.generation).toBe(2);
+
+    // 2回目・3回目は世代を進めない
+    expect(firstOf(applyPeerStatus(s, "p2", "error"), "generation_start")).toBeUndefined();
+    expect(firstOf(applyPeerStatus(s, "p2", "error"), "generation_start")).toBeUndefined();
+    expect(s.generation).toBe(2);
   });
 });
