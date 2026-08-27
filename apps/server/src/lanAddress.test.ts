@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { buildJoinUrls, pickLanAddresses, type NetworkInterfaces } from "./lanAddress";
+import {
+  buildJoinUrls,
+  isUsableLanIpv4,
+  pickLanAddresses,
+  type NetworkInterfaces,
+} from "./lanAddress";
 
 /** テスト用のNICエントリ。実物の型は項目が多いので、判定に使う分だけ埋める */
 function nic(address: string, opts: { internal?: boolean; family?: string } = {}) {
@@ -144,5 +149,40 @@ describe("buildJoinUrls", () => {
         "https://llm.example.com:8443/",
       ]);
     });
+  });
+});
+
+describe("isUsableLanIpv4", () => {
+  describe("参加者から到達しうるものは通す", () => {
+    for (const ip of ["192.168.1.5", "10.0.0.9", "172.16.3.1", "203.0.113.7", "1.1.1.1"]) {
+      test(ip, () => expect(isUsableLanIpv4(ip)).toBe(true));
+    }
+  });
+
+  describe("宛先として使えないものは弾く", () => {
+    const cases: [string, string][] = [
+      ["未指定", "0.0.0.0"],
+      ["ループバック", "127.0.0.1"],
+      ["ループバック(末尾以外)", "127.10.20.30"],
+      ["リンクローカル", "169.254.1.2"],
+      ["マルチキャスト", "224.0.0.1"],
+      ["マルチキャスト上限", "239.255.255.255"],
+      ["予約", "240.0.0.1"],
+      ["ブロードキャスト", "255.255.255.255"],
+    ];
+    for (const [label, ip] of cases) {
+      test(`${label}: ${ip}`, () => expect(isUsableLanIpv4(ip)).toBe(false));
+    }
+  });
+
+  describe("書式が壊れているものは弾く", () => {
+    const cases = ["", "not-an-ip", "1.2.3", "1.2.3.4.5", "300.1.1.1", "1.2.3.-1", "1.2.3.04a"];
+    for (const ip of cases) {
+      test(JSON.stringify(ip), () => expect(isUsableLanIpv4(ip)).toBe(false));
+    }
+  });
+
+  test("169.254 以外の 169.x は通す(リンクローカルではない)", () => {
+    expect(isUsableLanIpv4("169.1.2.3")).toBe(true);
   });
 });

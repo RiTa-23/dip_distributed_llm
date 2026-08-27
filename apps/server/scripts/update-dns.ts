@@ -11,8 +11,10 @@
 //
 // 引数でIPを渡せるのは、検出結果が意図と違うとき(仮想NICが複数ある等)に
 // その場で上書きするため。省略すると pickLanAddresses の先頭を使う。
+import { existsSync } from "node:fs";
 import { networkInterfaces } from "node:os";
-import { pickLanAddresses } from "../src/lanAddress";
+import { isUsableLanIpv4, pickLanAddresses } from "../src/lanAddress";
+import { pickTlsFiles } from "../src/tlsConfig";
 
 const API = "https://api.cloudflare.com/client/v4";
 
@@ -38,13 +40,6 @@ function readConfig(): { token: string; zoneId: string; recordName: string } {
     process.exit(1);
   }
   return { token, zoneId, recordName };
-}
-
-/** IPv4かどうか。引数で渡された値をそのままCloudflareに送らないための入口検査 */
-function isIpv4(value: string): boolean {
-  const parts = value.split(".");
-  if (parts.length !== 4) return false;
-  return parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255);
 }
 
 /** Cloudflare APIは200でも success:false を返すので、そこまで見て初めて成功とする */
@@ -86,8 +81,11 @@ const { token, zoneId, recordName } = readConfig();
 
 // --- 書き込むIPを決める ---
 const argIp = process.argv[2];
-if (argIp !== undefined && !isIpv4(argIp)) {
-  console.error(`IPv4アドレスとして読めません: ${argIp}`);
+if (argIp !== undefined && !isUsableLanIpv4(argIp)) {
+  // 書式だけでなく、ループバックやリンクローカルなど宛先として使えない範囲も弾く。
+  // 通してしまうと「更新成功」と出るのに参加者から繋がらず、原因が分からなくなる
+  console.error(`参加者から到達できるIPv4アドレスではありません: ${argIp}`);
+  console.error("(ループバック・リンクローカル・マルチキャスト等は指定できません)");
   process.exit(1);
 }
 
@@ -172,8 +170,22 @@ if (after.proxied !== false) {
 }
 console.log(`更新しました: ${recordName} ${record.content ?? "(不明)"} → ${after.content} (DNS only)`);
 
+// 案内するURLは、Honoが実際に使う設定から組み立てる。ここを決め打ちにすると
+// 証明書が無い(HTTP起動)場合などに、開くはずのないURLを案内してしまう
+const tls = pickTlsFiles(existsSync, process.env);
+const scheme = tls !== null ? "https" : "http";
+const serverPort = Number(process.env.PORT ?? (tls !== null ? 8443 : 3000));
+const origin = `${scheme}://${recordName}:${serverPort}`;
+
 console.log("\n次にやること:");
-console.log(`  1. 参加者の端末(会場Wi-Fi)で https://${recordName}:8443/ が開けるか試す`);
-console.log(`  2. 開けたら PUBLIC_ORIGIN=https://${recordName}:8443 を付けてHonoを起動する`);
+console.log(`  1. 参加者の端末で ${origin}/ が開けるか試す`);
+console.log("  2. 開けたら Hono を起動する(bun run dev)");
 console.log("  3. 開けなければDNSリバインディング保護に当たっている可能性があります。");
 console.log("     その場合は発表者画面のQRをLAN IPの候補に切り替えて進めてください");
+
+if (tls === null) {
+  console.warn("\n警告: 証明書が見つかりません(HTTPで起動します)。");
+  console.warn("  参加者のブラウザが secure context にならず、SharedArrayBuffer と");
+  console.warn("  WebGPU が使えないため、この状態では推論が成立しません。");
+  console.warn("  certs/prod/ に本番用の証明書を置くか、bun run cert を実行してください。");
+}

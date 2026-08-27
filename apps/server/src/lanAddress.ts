@@ -27,6 +27,29 @@ export function pickLanAddresses(nics: NetworkInterfaces): string[] {
 }
 
 /**
+ * 参加者から到達しうるIPv4アドレスか。書式だけでなく、宛先として使えない範囲も弾く。
+ *
+ * `bun run dns` が引数で受け取った値をそのままAレコードに書くと、ループバックや
+ * リンクローカルでも「更新成功」と表示されてしまい、参加者から繋がらない理由が
+ * 分からなくなる。`pickLanAddresses` が自動検出で除外しているのと同じものは、
+ * 手入力でも通さない。
+ *
+ * プライベートアドレスに限定はしない。配られるのが公開アドレスの場合もあるため。
+ */
+export function isUsableLanIpv4(value: string): boolean {
+  const parts = value.split(".");
+  if (parts.length !== 4) return false;
+  if (!parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255)) return false;
+
+  const [a, b] = parts.map(Number) as [number, number, number, number];
+  if (a === 0) return false; // 0.0.0.0/8 未指定
+  if (a === 127) return false; // ループバック
+  if (a === 169 && b === 254) return false; // リンクローカル(DHCPが取れなかったとき)
+  if (a >= 224) return false; // マルチキャスト(224-239)・予約(240-255)・ブロードキャスト
+  return true;
+}
+
+/**
  * 会場Wi-Fiらしさの順位。小さいほど優先。
  * 172.16-31 は私用アドレスだが、Docker・WSL2・Hyper-V の仮想NICがこの範囲を使うため後ろへ置く。
  */

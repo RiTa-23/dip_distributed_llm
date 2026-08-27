@@ -250,7 +250,7 @@ bun run dev
 
 **起動ログがこうなっていれば成功。**
 
-```
+```text
 証明書: ./certs/prod/cert.pem — 本番デモ用 certs/prod(公開CA。飛び入り参加者に警告が出ない)
 参加URL: https://llm.あなたのドメイン:8443 を既定にします
 ```
@@ -261,7 +261,7 @@ bun run dev
 
 **rootCA を入れていない端末**で開く。同じLAN内のスマホが手軽。
 
-```
+```text
 https://llm.あなたのドメイン:8443/
 ```
 
