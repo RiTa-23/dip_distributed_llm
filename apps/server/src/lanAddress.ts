@@ -27,6 +27,29 @@ export function pickLanAddresses(nics: NetworkInterfaces): string[] {
 }
 
 /**
+ * 参加者から到達しうるIPv4アドレスか。書式だけでなく、宛先として使えない範囲も弾く。
+ *
+ * `bun run dns` が引数で受け取った値をそのままAレコードに書くと、ループバックや
+ * リンクローカルでも「更新成功」と表示されてしまい、参加者から繋がらない理由が
+ * 分からなくなる。`pickLanAddresses` が自動検出で除外しているのと同じものは、
+ * 手入力でも通さない。
+ *
+ * プライベートアドレスに限定はしない。配られるのが公開アドレスの場合もあるため。
+ */
+export function isUsableLanIpv4(value: string): boolean {
+  const parts = value.split(".");
+  if (parts.length !== 4) return false;
+  if (!parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255)) return false;
+
+  const [a, b] = parts.map(Number) as [number, number, number, number];
+  if (a === 0) return false; // 0.0.0.0/8 未指定
+  if (a === 127) return false; // ループバック
+  if (a === 169 && b === 254) return false; // リンクローカル(DHCPが取れなかったとき)
+  if (a >= 224) return false; // マルチキャスト(224-239)・予約(240-255)・ブロードキャスト
+  return true;
+}
+
+/**
  * 会場Wi-Fiらしさの順位。小さいほど優先。
  * 172.16-31 は私用アドレスだが、Docker・WSL2・Hyper-V の仮想NICがこの範囲を使うため後ろへ置く。
  */
@@ -36,7 +59,54 @@ function rank(ip: string): number {
   return 2;
 }
 
-/** 参加者が開くURL(参加者画面は `/`)。候補が無ければ空配列 */
-export function buildJoinUrls(nics: NetworkInterfaces, scheme: string, port: number): string[] {
-  return pickLanAddresses(nics).map((ip) => `${scheme}://${ip}:${port}/`);
+/**
+ * 参加者が開くURLの候補。先頭が既定で、発表者画面はこれをQRに入れる。
+ *
+ * `publicOrigin`(本番デモ用の実在ドメイン。#23)を渡すとそれを先頭に置く。
+ * Let's Encrypt の証明書はドメインにしか効かないため、LAN IPのURLで開くと
+ * 警告が出てしまう。QRにはドメインが入っている必要がある。
+ *
+ * それでもLAN IPの候補を消さないのは意図的で、会場のDNSが
+ * プライベートIPへの応答を捨てる場合(DNSリバインディング保護)に、
+ * 発表者が候補を選び直して「警告は出るがつながる」状態へ退避できるようにするため。
+ * 選び直しの口は `useJoinUrl` の candidates / select が既に持っている。
+ */
+export function buildJoinUrls(
+  nics: NetworkInterfaces,
+  scheme: string,
+  port: number,
+  publicOrigin?: string,
+): string[] {
+  const lan = pickLanAddresses(nics).map((ip) => `${scheme}://${ip}:${port}/`);
+  const publicUrl = normalizePublicOrigin(publicOrigin, scheme);
+  return publicUrl === null ? lan : [publicUrl, ...lan];
+}
+
+/**
+ * 設定されたオリジンを参加URLの形(末尾 `/`)に整える。使えない値なら null。
+ *
+ * 環境変数から来るので、書き間違いをそのままQRに載せない。空文字・相対パス・
+ * http(s)以外を弾く考え方は `apps/web/src/lib/joinInfo.ts` の isHttpUrl と揃えてある。
+ *
+ * **起動中のスキームと一致しないものも弾く。** TLSで配信しているのに `http://` を
+ * 配ると繋がらないうえ secure context にならず、SharedArrayBuffer と WebGPU が
+ * 使えなくなる(逆にHTTP起動で `https://` を配っても繋がらない)。
+ * このプロジェクトはHono1本で単一オリジン配信するので、TLS終端を別に置く構成は無い。
+ *
+ * ポートは書かれた通りに扱う。省略されていれば省略のまま返すので、既定ポート以外で
+ * 配信しているなら呼び出し側がポートまで含めて渡すこと。
+ */
+export function normalizePublicOrigin(value: string | undefined, scheme: string): string | null {
+  if (value === undefined) return null;
+  const trimmed = value.trim();
+  if (trimmed === "") return null;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (url.protocol !== `${scheme}:`) return null; // 配信中のスキームと食い違う
+    // パス・クエリ・ハッシュは参加URLには要らない。オリジンだけ取り出す
+    return `${url.origin}/`;
+  } catch {
+    return null; // URLとして読めない
+  }
 }

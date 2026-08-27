@@ -5,25 +5,15 @@ import { ProgressBar } from "../components/ProgressBar";
 import { DevPanel } from "../components/DevPanel";
 import { JoinQr } from "../components/JoinQr";
 import { useCluster } from "../hooks/useCluster";
-import { useStalled } from "../hooks/useStalled";
 import { useWebrtcSignaling } from "../hooks/useWebrtcSignaling";
 import { usePeerManager } from "../hooks/usePeerManager";
 import type { GenerationEvent } from "../hooks/usePeerManager";
-import { useModelDownload } from "../hooks/useModelDownload";
 import { getClientId } from "../lib/clientId";
-import { formatBytes } from "../lib/format";
-import { CONNECT_STALL_MS, MODEL_NAME, TOTAL_LAYERS } from "../config";
+import { MODEL_NAME, TOTAL_LAYERS } from "../config";
 import type { Phase } from "../types/cluster";
 import styles from "./RequesterView.module.css";
 
 type ChatEntry = { role: "user" | "assistant"; text: string };
-
-/**
- * トースト1件ぶんの中身とトーン(#68)。「人が増えた」は嬉しい出来事、
- * 「誰か落ちた」は残念な出来事なので、同じ扱いにしない。編成完了などの
- * 単なる進行の合図は info(装飾なし)にする
- */
-type Toast = { text: string; tone: "info" | "joyful" | "calm" };
 
 const NOTICE: Partial<Record<Phase, string>> = {
   idle: "サーバーに接続していません",
@@ -33,13 +23,6 @@ const NOTICE: Partial<Record<Phase, string>> = {
   reorganizing: "メンバーが変わったため再編成しています",
   error: "接続に失敗しました",
 };
-
-/**
- * 配布中が長引いたときの案内(#78)。`NOTICE.connecting` を差し替える形で出す。
- * 起きていることは「繋がらない参加者を待つのをやめて組み直しを頼んだ」なので、
- * 配布中の文言のままでは何も起きていないように見える
- */
-const CONNECT_STALL_NOTICE = "接続できない参加者がいます。編成を組み直しています";
 
 const DUMMY_ANSWER =
   "1つのモデルを層ごとに分けて、複数のPCが順番に計算を受け持つしくみです。" +
@@ -51,7 +34,6 @@ const PEER_STATUS_LABEL: Record<string, string> = {
   error: "エラー",
 };
 
-/** 発表者側のチャットUIと、参加者の接続・再編成状態を表示する。 */
 export function RequesterView() {
   // useCluster が初期状態に取り込むので、先に決めておく
   const [myId] = useState(() => getClientId("requester"));
@@ -60,7 +42,7 @@ export function RequesterView() {
     myId,
     role: "requester",
   });
-  const modelDownload = useModelDownload();
+  const [modelProgress, setModelProgress] = useState(0);
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [streaming, setStreaming] = useState("");
   const [generating, setGenerating] = useState(false);
@@ -71,8 +53,7 @@ export function RequesterView() {
   const toastTimer = useRef<number | null>(null);
   const previousRosterSize = useRef(state.roster.length);
   const previousGenerating = useRef(generating);
-  const previousConnectStalled = useRef(false);
-  const [toast, setToast] = useState<Toast | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
   const { phase } = state;
 
@@ -119,10 +100,69 @@ export function RequesterView() {
   const distribution =
     rtc.expectedIds.length === 0 ? 0 : rtc.openIds.length / rtc.expectedIds.length;
 
-  // モデル本体はまだ推論に使われていない(①のWASMへ渡すのは #71 の範囲)ので、
-  // 取得に失敗しても送信ボタンはブロックしない(本人判断、2026/8/27)。GGUFが
-  // 置いてあるかどうかだけでデモが死ぬのを避ける
-  const canSubmit = phase === "active" && !generating;
+  const modelReady = modelProgress >= 1;
+  const canSubmit = phase === "active" && modelReady && !generating;
+
+  // トラックA: モデルのダウンロード。フェーズとは独立に、開いた瞬間から進む。
+  useEffect(() => {
+    let disposed = false;
+    let fallbackTimer: number | null = null;
+    const controller = new AbortController();
+
+    const startFallback = () => {
+      let value = 0;
+      fallbackTimer = window.setInterval(() => {
+        value = Math.min(1, value + 0.02);
+        setModelProgress(value);
+        if (value >= 1 && fallbackTimer !== null) {
+          clearInterval(fallbackTimer);
+          fallbackTimer = null;
+        }
+      }, 80);
+    };
+
+    const download = async () => {
+      try {
+        const response = await fetch(`/models/${MODEL_NAME}`, { signal: controller.signal });
+        if (!response.ok || !response.body)
+          throw new Error(`model download failed: ${response.status}`);
+
+        const total = Number(response.headers.get("content-length"));
+        if (!Number.isFinite(total) || total <= 0) {
+          startFallback();
+          return;
+        }
+
+        const reader = response.body.getReader();
+        let received = 0;
+        try {
+          while (!disposed) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            received += value.byteLength;
+            setModelProgress(Math.min(1, received / total));
+          }
+          if (!disposed) setModelProgress(1);
+        } finally {
+          reader.releaseLock();
+        }
+      } catch (error) {
+        if (disposed) return;
+        const message = error instanceof Error ? error.message : String(error);
+        dispatch({
+          type: "failed",
+          message: `モデルを取得できませんでした: ${message}`,
+        });
+      }
+    };
+
+    void download();
+    return () => {
+      disposed = true;
+      controller.abort();
+      if (fallbackTimer !== null) clearInterval(fallbackTimer);
+    };
+  }, [dispatch]);
 
   // トラックB: 編成。接続できたら名乗り、すぐ準備完了とする(発表者に起動待ちはない)
   useEffect(() => {
@@ -144,25 +184,6 @@ export function RequesterView() {
     }
   }, [phase, rtc.status, dispatch]);
 
-  // 配布中が続くのは、answerを返さないまま黙っている参加者が居るとき。ICEが
-  // 諦めるのを待つと30秒以上かかるので、時間で見切ってHonoに編成のやり直しを頼む
-  // (#78の実機確認)。`useStalled` は watching が false を通ると測り直すので、
-  // 世代をまたいで経過を持ち越さない
-  const connectStalled = useStalled(phase === "connecting", CONNECT_STALL_MS);
-
-  // false→true に変わった1回だけ送る。
-  //
-  // ここでフェーズは動かさない(`dispatch({ type: "failed" })` はしない)。時間切れで
-  // 画面が勝手に別のフェーズへ移ると、遅れて届いた generation_start と食い違う。
-  // 動かすのはHonoが返す generation_aborted で、サーバが唯一の出口という形は変えない。
-  // 古い世代の時間切れは applyGenerationFailed が世代番号を見て捨てる
-  useEffect(() => {
-    if (previousConnectStalled.current === connectStalled) return;
-    previousConnectStalled.current = connectStalled;
-    if (!connectStalled) return;
-    send({ type: "generation_failed", generation: state.generation });
-  }, [connectStalled, send, state.generation]);
-
   // 推論中は新規peerの加入による再編成を保留させる(#50)。生成の開始・終了は
   // run() 側のタイマーとtoken/generation_end受信の両方から起きるので、
   // 発生源を1箇所に絞れる generating の変化を見て送る
@@ -179,33 +200,22 @@ export function RequesterView() {
     if (currentSize === previousSize) return;
 
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    // 増えたか減ったかだけで見せ方を分ける(#68)。理由の詳細はabortMessage側の
-    // トーストが別途出すので、ここは台数の増減という事実だけを見る
-    setToast({
-      text: `${previousSize}台→${currentSize}台に更新`,
-      tone: currentSize > previousSize ? "joyful" : "calm",
-    });
+    setToast(`${previousSize}台→${currentSize}台に更新`);
     toastTimer.current = window.setTimeout(() => setToast(null), 3200);
   }, [state.roster.length]);
 
   useEffect(() => {
-    const message = state.abortMessage;
+    if (!lastMessage) return;
+    const message =
+      lastMessage.type === "generation_start"
+        ? "編成が完了しました"
+        : lastMessage.type === "generation_aborted"
+          ? lastMessage.message
+          : null;
     if (!message) return;
 
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    // 再編成のきっかけが「人が増えた」ことなら祝い、それ以外(誰かが抜けた・
-    // 繋がらなかった)は落ち着いた見せ方に留める(#68)
-    setToast({
-      text: message,
-      tone: state.abortReason === "peer_joined" ? "joyful" : "calm",
-    });
-    toastTimer.current = window.setTimeout(() => setToast(null), 3200);
-  }, [state.abortMessage, state.abortReason]);
-
-  useEffect(() => {
-    if (!lastMessage || lastMessage.type !== "generation_start") return;
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast({ text: "編成が完了しました", tone: "info" });
+    setToast(message);
     toastTimer.current = window.setTimeout(() => setToast(null), 3200);
   }, [lastMessage]);
 
@@ -239,23 +249,10 @@ export function RequesterView() {
 
   const computingClientId =
     computingIndex === null ? null : (assignments[computingIndex]?.clientId ?? null);
-  const notice = phase === "connecting" && connectStalled ? CONNECT_STALL_NOTICE : NOTICE[phase];
-  // NOTICEは`active`を持たない(伝えることが無いので箱ごと消す)。読み上げ用は
-  // 箱の有無に関わらず7フェーズすべてを伝えたいので、その1件だけ別に補う(#66)
-  const phaseAnnouncement =
-    phase === "active" ? "接続済みです。プロンプトを送れます" : (notice ?? "");
+  const notice = NOTICE[phase];
 
   return (
     <div className={styles.page}>
-      {/*
-        画面の状態(NOTICEと同じ文言)を読み上げるためだけの領域。`.notice` は
-        `active` のとき箱ごと消えるため、見た目とは別に常時マウントしたここへ集約する。
-        テキストが実際に変わったときしかDOMが動かないので、連呼にはならない(#66)
-      */}
-      <div className={styles.srOnly} aria-live="polite" aria-atomic="true">
-        {phaseAnnouncement}
-      </div>
-
       <TopBar
         left={
           <>
@@ -307,19 +304,9 @@ export function RequesterView() {
 
           <div>
             <div className={styles.sectionLabel}>モデル</div>
-            {modelDownload.status === "done" && (
-              <ProgressBar value={1} label="モデルのダウンロード" />
-            )}
-            {modelDownload.status === "loading" && modelDownload.progress !== null && (
-              <ProgressBar value={modelDownload.progress} label="モデルのダウンロード" />
-            )}
+            <ProgressBar value={modelProgress} label="モデルのダウンロード" />
             <div className={styles.dim}>
-              {modelDownload.status === "loading" &&
-                (modelDownload.total !== null
-                  ? `${formatBytes(modelDownload.received)} / ${formatBytes(modelDownload.total)}`
-                  : formatBytes(modelDownload.received))}
-              {modelDownload.status === "done" && "読み込み済み"}
-              {modelDownload.status === "failed" && "モデルを取得できませんでした"}
+              {modelReady ? "読み込み済み" : `${Math.round(modelProgress * 100)}%`}
             </div>
           </div>
 
@@ -343,17 +330,11 @@ export function RequesterView() {
 
         <section className={styles.chat}>
           {toast && (
-            <div
-              className={`${styles.toast} ${toast.tone === "joyful" ? styles.toastJoyful : toast.tone === "calm" ? styles.toastCalm : ""}`}
-              role="status"
-            >
-              {toast.text}
+            <div className={styles.toast} role="status">
+              {toast}
             </div>
           )}
           {notice && <div className={styles.notice}>{notice}</div>}
-          {phase === "error" && state.errorMessage && (
-            <p className={styles.errorDetail}>{state.errorMessage}</p>
-          )}
           <div className={styles.log}>
             {chat.map((m, i) => (
               <div key={i} className={m.role === "user" ? styles.user : styles.assistant}>

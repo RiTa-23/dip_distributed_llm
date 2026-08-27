@@ -64,7 +64,6 @@ export type ClusterState = {
    * これで絞り込んだpeerに対してのみ行う(#81)
    */
   generationPeerIds: string[];
-  abortMessage: string | null;
   /**
    * 自分のclientId。generation_start の peerIds に自分が居るかの判定に使う。
    * 実際の値は useCluster が遅延初期化で入れる(既定の空文字は誰とも一致しない)
@@ -84,7 +83,6 @@ export const initialClusterState: ClusterState = {
   errorMessage: null,
   abortReason: null,
   generationPeerIds: [],
-  abortMessage: null,
   myId: "",
   role: "peer",
 };
