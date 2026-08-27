@@ -28,19 +28,29 @@ export function useModelDownload(): ModelDownload {
 
   useEffect(() => {
     const controller = new AbortController();
+    // チャンクごとにsetStateすると、GB級の転送で毎秒100回超の再描画になり、
+    // WebRTC/WASMが動いている最中に一番負荷をかけたくない場所で重なる。
+    // usePeerStats.ts と同じ250ms刻みへ間引く。最後の値は completion 側で必ず反映する
+    let lastFlush = 0;
     fetch(`/models/${MODEL_NAME}`, { signal: controller.signal })
       .then((res) => {
         if (!res.ok) throw new Error(`status ${res.status}`);
         return readWithProgress(
           res,
           (r, t) => {
+            const now = Date.now();
+            if (now - lastFlush < 250) return;
+            lastFlush = now;
             setReceived(r);
             setTotal(t);
           },
           controller.signal,
         );
       })
-      .then(() => setStatus("done"))
+      .then((finalReceived) => {
+        setReceived(finalReceived);
+        setStatus("done");
+      })
       .catch((err) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
         setStatus("failed");

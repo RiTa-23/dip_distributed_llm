@@ -23,7 +23,7 @@ bun run dev
 
 既定で本物のHono(`/ws`)へ繋ぎます。接続先は**画面を開いているオリジン**です。Honoがフロントごと配っている(`bun run --cwd apps/server dev` で `:3000` / `:8443` を開く)場合はこれだけで繋がります。
 
-viteのdevサーバ(`:5173`)とHonoを別々に動かすときは、Honoのオリジンを渡してください。`/ws` と `/join-info` の両方がプロキシされます。
+viteのdevサーバ(`:5173`)とHonoを別々に動かすときは、Honoのオリジンを渡してください。`/ws` と `/join-info` と `/models` の3つがプロキシされます。
 
 ```bash
 VITE_HONO_ORIGIN=http://localhost:3000 bun run dev
@@ -100,7 +100,7 @@ idle ─→ preparing ─→ waiting ─→ connecting ─→ active
 トラックB  preparing → waiting → connecting → active
 ```
 
-**取得に失敗しても送信は止めません**(本人判断、2026/8/27)。モデル本体はまだ推論に使われていないため、GGUFが置いてあるかどうかだけでデモが死ぬのを避けています。入力欄が使えるかどうかは `phase === "active"` だけで決まり、モデルDLの状態とは独立です。
+**取得に失敗しても送信は止めません**(本人判断、2026/8/27)。モデル本体はまだ推論に使われていないため、GGUFが置いてあるかどうかだけでデモが死ぬのを避けています。入力欄が使えるかどうかは `phase === "active" && !generating` だけで決まり、モデルDLの状態とは独立です。
 
 ## ディレクトリ
 

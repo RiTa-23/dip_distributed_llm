@@ -277,6 +277,9 @@ export function RequesterView() {
 
           <div>
             <div className={styles.sectionLabel}>モデル</div>
+            {modelDownload.status === "done" && (
+              <ProgressBar value={1} label="モデルのダウンロード" />
+            )}
             {modelDownload.status === "loading" && modelDownload.progress !== null && (
               <ProgressBar value={modelDownload.progress} label="モデルのダウンロード" />
             )}
