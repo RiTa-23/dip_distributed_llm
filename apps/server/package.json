@@ -6,7 +6,7 @@
     "dns": "bun scripts/update-dns.ts",
     "dummy-model": "bun scripts/gen-dummy-model.ts",
     "web:copy": "bun run --cwd ../web build && bun scripts/copy-web-dist.ts",
-    "setup": "bun run cert && bun run dummy-model && bun run web:copy",
+    "setup": "bun run cert && bun run web:copy",
     "lint": "oxlint",
     "format": "oxfmt --check src",
     "test": "bun test --pass-with-no-tests",

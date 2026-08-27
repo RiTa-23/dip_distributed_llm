@@ -2,8 +2,11 @@
 
 Hono コーディネータ。静的配信(React成果物 / GGUF / WASM)・COOP/COEPヘッダ付与・
 `/ws`(制御メッセージ / WebRTCシグナリング取り次ぎ・**P1で実装**)・ロスター管理を担う。
-実データ(モデル重み・テンソル)は Hono を経由せず、requester⇔peer 間の WebRTC DataChannel で
-直接 P2P 通信する(`AGENTS.md` 前提2)。
+Hono が運ぶのは2つ。`/ws` の制御メッセージと、`/models/*` の **GGUF**(HTTP の HEAD / Range)。
+**Runtime 間の RPC データ(peer の担当層の重み・テンソル)は Hono を経由せず**、
+requester⇔peer 間の WebRTC DataChannel を流れる。経路は direct を優先し、成立しないときは
+会場LAN内の TURN による relay を許可する。**TURN 経由でも Hono は RPC を中継しない**
+(`AGENTS.md` 前提2 / 前提6)。GGUF も RPC も会場LANの外へは出さない。
 
 ## セットアップ(初回)
 
@@ -11,7 +14,7 @@ Hono コーディネータ。静的配信(React成果物 / GGUF / WASM)・COOP/C
 # リポジトリルートで依存インストール
 bun install
 
-# 証明書・ダミーモデル・フロント成果物をまとめて用意
+# 証明書とフロント成果物を用意する(**モデルは別途**。下記)
 cd apps/server
 bun run setup
 ```
@@ -21,10 +24,27 @@ bun run setup
 | 手順 | スクリプト | 内容 |
 |---|---|---|
 | TLS証明書 | `bun run cert` | mkcert でローカルCA導入 + `certs/{cert,key}.pem` 生成(#14) |
-| ダミーモデル | `bun run dummy-model` | `public/models/qwen2.5-1.5b-instruct-q4_k_m.gguf` を生成(#12) |
 | フロント配置 | `bun run web:copy` | `apps/web` をビルドし `public/web-dist/` にコピー(単一オリジン配信) |
 
-- 事前に [mkcert](https://github.com/FiloSottile/mkcert) が必要
+### ⚠️ モデル(GGUF)は `setup` では用意されない
+
+**`bun run setup` は real GGUF を生成も変更もしない。** 別途、自分で置く必要がある。
+
+| | |
+|---|---|
+| 置き場所 | `apps/server/public/models/qwen2.5-0.5b-instruct-q4_k_m.gguf` |
+| 名前 | `apps/web/src/config.ts` の `MODEL_NAME` と一致すること |
+| サイズ | `491400032` bytes |
+| SHA-256 | `74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db` |
+
+B-1 以降、Runtime はこのファイルを `/models/*` から HTTP で読んで**実推論**している。
+取り違えに気づけるよう、サイズとハッシュを載せてある(`sha256sum` / `Get-FileHash` で確認)。
+
+`bun run dummy-model` は **`/models/*` の配信経路(HEAD / Range / 206 / 416)を
+確かめるためだけ**の `public/models/dummy-route-test.gguf` を作る。中身はランダムバイトで、
+**実推論には使えない**。real GGUF と別名にしてあるのは、同名にすると上書きしてしまうため。
+この理由で `setup` からは外してある。
+
   - macOS: `brew install mkcert nss`
   - Windows: `winget install FiloSottile.mkcert`(Windows 11 標準の winget を推奨)
     - インストール直後は PATH が反映されていないので、ターミナルを開き直すこと

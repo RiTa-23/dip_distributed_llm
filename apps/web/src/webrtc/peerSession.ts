@@ -2,6 +2,7 @@ import type { WebrtcSignalMessage } from "@dip_distributed_llm/shared-types/mess
 import {
   bindChannel,
   createCandidateQueue,
+  attachIceDiagnostics,
   defaultPeerConnectionFactory,
   describeError,
   toCandidateInit,
@@ -28,6 +29,8 @@ export function createPeerSession({
   let channel: RTCDataChannel | null = null;
   let candidates: CandidateQueue | null = null;
   let remoteId: string | null = null;
+  /** 経路ログの後始末。teardown で呼ぶ */
+  let detachDiagnostics: (() => void) | null = null;
   let open = false;
   let disposed = false;
 
@@ -50,6 +53,7 @@ export function createPeerSession({
     remoteId = from;
     const conn = createConnection();
     pc = conn;
+    detachDiagnostics = attachIceDiagnostics(conn);
     candidates = createCandidateQueue((candidate) => {
       void conn.addIceCandidate(candidate).catch((e: unknown) => fail(describeError(e)));
     });
@@ -86,7 +90,7 @@ export function createPeerSession({
     conn.onconnectionstatechange = () => {
       if (disposed) return;
       if (conn.connectionState === "failed") {
-        fail("発表者との直接接続に失敗しました");
+        fail("発表者との接続に失敗しました");
       }
       callbacks.onChange();
     };
@@ -147,6 +151,8 @@ export function createPeerSession({
     teardown: () => {
       disposed = true;
       open = false;
+      detachDiagnostics?.();
+      detachDiagnostics = null;
       if (channel) {
         unbindChannel(channel);
         channel.close();

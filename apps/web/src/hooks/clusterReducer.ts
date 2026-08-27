@@ -19,6 +19,7 @@ export type ClusterAction =
   /** 開発用パネル専用。任意のフェーズへ飛ばす */
   | { type: "dev_set_phase"; phase: Phase };
 
+/** サーバー通知とブラウザ内イベントから参加者・発表者の状態を更新する。 */
 export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState {
   switch (a.type) {
     case "socket_opened":
@@ -33,6 +34,7 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
         generation: 0,
         abortReason: null,
         generationPeerIds: [],
+        abortMessage: null,
       };
 
     case "local_ready":
@@ -54,6 +56,7 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
         errorMessage: null,
         abortReason: null,
         generationPeerIds: [],
+        abortMessage: null,
       };
 
     case "dev_set_phase":
@@ -83,21 +86,22 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
             // 編成外でも持つ。層バー(#81)は「今動いている編成」を出すものなので、
             // 自分がそこに入っているかとは別の話
             generationPeerIds: a.msg.peerIds,
+            abortMessage: null,
           };
         }
 
         case "generation_aborted":
           // 古い世代の通知が遅れて届くことがある。捨てないと正常な編成が巻き込まれる
           if (a.msg.generation < s.generation) return s;
-          // reason は画面の文言の出し分けにだけ使う。判断はしない
-          // 失敗して止まっている画面は、再編成中に見せない(2026/8/27の実機確認)。
-          // Honoはこの端末を status: "error" として編成から外したままなので
-          // (#57)、「メンバーが変わりました。まもなく再開します」は嘘になる。
-          // 戻る道は「参加し直す」だけで、それは error の画面にしか出ない
           return {
             ...s,
+            // 失敗して止まっている画面は、再編成中に見せない(2026/8/27の実機確認)。
+            // Honoはこの端末を status: "error" として編成から外したままなので
+            // (#57)、「メンバーが変わりました。まもなく再開します」は嘘になる。
+            // 戻る道は「参加し直す」だけで、それは error の画面にしか出ない
             phase: s.phase === "error" ? "error" : "reorganizing",
             abortReason: a.msg.reason,
+            abortMessage: a.msg.message,
           };
 
         case "webrtc_signal":

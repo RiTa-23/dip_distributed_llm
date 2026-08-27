@@ -14,7 +14,21 @@ import type {
 // WebSocket を張らずに bun test から直接検証できる(#20 / #22)。
 
 /** 1クライアントの状態。ws 接続そのものは wiring 層(coordinator.ts)が別に保持する。 */
-export type ClientRecord = { role: Role; displayName: string; status: PeerStatus };
+export type ClientRecord = {
+  role: Role;
+  displayName: string;
+  status: PeerStatus;
+  /**
+   * 直近の世代開始より**後に**、やり直しの契機(`error` への遷移 / 入り直し)を通ったか。
+   * 失敗した編成を組み直してよいかの判定に使う(#56 の補修)。
+   *
+   * 「失敗を記録した時点」ではなく「世代開始時点」を基準にするのが要点。
+   * `generation_failed`(requesterのWS)と `peer_status: error`(peerのWS)は別の接続から
+   * 来るため到着順が保証されない。基準を世代開始に置けば、どちらが先に届いても
+   * 同じ結論になる。
+   */
+  resetSinceStart: boolean;
+};
 
 /** 世代の状態機械。生成中(active)は増減を反映せず、idle のときだけ次の世代を開始する。 */
 export type GenerationPhase = "idle" | "active";
@@ -32,7 +46,10 @@ export type ClusterState = {
   acceptingGrowth: boolean;
   /**
    * 直前に編成へ失敗した顔ぶれ(#56)。同じ組み合わせでの即時リトライを避けるために持つ。
-   * 顔ぶれが変わるか、世代が始まったら null に戻す。
+   * 世代が始まったら null に戻す。
+   *
+   * 同じ顔ぶれでも、そのうち誰かがやり直しの契機を通っていれば組み直す。
+   * その判定は `ClientRecord.resetSinceStart` を見る。
    */
   failedPeerIds: string[] | null;
   /** 起動してからの累計・最大値(#60)。プロセスが落ちればリセットされてよい。 */
@@ -149,8 +166,11 @@ export function hasOtherRequester(state: ClusterState, clientId: string): boolea
  * requester 不在での開始を防ぐ(orchestrator が居ない生成を作らない)。
  *
  * 直前に同じ顔ぶれで編成に失敗している場合は開始しない(#56)。同じ組み合わせをすぐ
- * 組み直すと、失敗し続けるあいだ generation_start が延々と出てしまう。誰かが増減するか
- * status が変われば顔ぶれが変わり、そこで再開する。
+ * 組み直すと、失敗し続けるあいだ generation_start が延々と出てしまう。
+ *
+ * ただし**顔ぶれが同じでも、誰かがやり直しの契機を通っていれば組み直す**。これが無いと、
+ * peer が1台だけの部屋では一度失敗すると永久に組み直せない(error → ready も入り直しも、
+ * 結局は同じ顔ぶれに戻るため)。
  */
 function maybeStartGeneration(state: ClusterState): Effect[] {
   if (state.phase !== "idle") return [];
@@ -158,12 +178,21 @@ function maybeStartGeneration(state: ClusterState): Effect[] {
 
   const peerIds = eligiblePeerIds(state);
   if (peerIds === null) return [];
-  if (state.failedPeerIds !== null && sameMembers(state.failedPeerIds, peerIds)) return [];
+  if (state.failedPeerIds !== null && sameMembers(state.failedPeerIds, peerIds)) {
+    // 同じ顔ぶれ。誰もやり直していなければ待つ
+    const retried = peerIds.some((id) => state.clients.get(id)?.resetSinceStart === true);
+    if (!retried) return [];
+  }
 
   state.failedPeerIds = null;
   state.generation += 1;
   state.phase = "active";
   state.activeGenerationPeerIds = peerIds;
+  // この世代を新しい基準にする。以降の `error` / 入り直しだけを「やり直し」と数える
+  for (const id of peerIds) {
+    const member = state.clients.get(id);
+    if (member) member.resetSinceStart = false;
+  }
   const msg: GenerationStartMessage = {
     type: "generation_start",
     generation: state.generation,
@@ -208,7 +237,9 @@ export function applyHello(
   role: Role,
   displayName: string,
 ): Effect[] {
-  state.clients.set(clientId, { role, displayName, status: "connecting" });
+  // 入り直しはそれ自体がやり直し。`connecting` から始まるので、ここで即座に
+  // 同じ編成を組み直すことにはならない(`eligiblePeerIds` が準備中を待つ)。
+  state.clients.set(clientId, { role, displayName, status: "connecting", resetSinceStart: true });
   if (role === "peer") trackPeer(state, clientId);
   // requesterの(再)接続でacceptingGrowthをtrueにリセットする。操作者不在のまま
   // falseに固定されて新規peerが永久に取り込まれなくなるのを防ぐ(#34)。
@@ -229,6 +260,10 @@ export function applyPeerStatus(
   const c = state.clients.get(clientId);
   if (!c) return []; // hello 前 / 未知クライアントは無視
   c.status = status;
+  // `error` は「この編成では無理だった」という本人の申告。やり直しとして数える。
+  // `ready` の再送だけでは数えない — 同じ状態のまま generation_start を繰り返さないのが
+  // #56 の目的で、そこは保つ。同じ `error` が何度来ても結果は変わらない(冪等)。
+  if (status === "error") c.resetSinceStart = true;
   return [
     { kind: "broadcast", msg: rosterUpdate(state) },
     ...maybeStartGeneration(state),

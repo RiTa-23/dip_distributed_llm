@@ -425,3 +425,135 @@ describe("generation_failed による復帰(#56)", () => {
     expect(start?.peerIds).toEqual(["p1"]);
   });
 });
+
+// #56 は「同じ壊れた編成を即座に無限retryしない」ためのもので、そこは保つ。
+// ただし peer が1台だけの部屋では、error → ready も入り直しも結局は同じ顔ぶれに戻るため、
+// 顔ぶれだけを見ていると一度失敗した部屋が永久に組み直せなくなる。
+//
+// **`generation_failed`(requesterのWS)と `peer_status: error`(peerのWS)は別の接続から
+// 来るので到着順は保証されない。** どちらが先でも同じ結論になることを両向きで固定する。
+describe("失敗した編成のやり直し(1台構成の復帰)", () => {
+  /** requester と peer 1台で世代1を開始し、その世代を失敗させた状態。 */
+  function failedWithOnePeer() {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyPeerStatus(s, "p1", "ready");
+    expect(s.phase).toBe("active");
+    expect(s.generation).toBe(1);
+    applyGenerationFailed(s, "req", 1);
+    expect(s.phase).toBe("idle");
+    return s;
+  }
+
+  test("generation_failed → error → ready で組み直す", () => {
+    const s = failedWithOnePeer();
+    applyPeerStatus(s, "p1", "error");
+    const eff = applyPeerStatus(s, "p1", "ready");
+
+    const start = firstOf(eff, "generation_start");
+    expect(start?.peerIds).toEqual(["p1"]);
+    expect(s.generation).toBe(2);
+  });
+
+  test("error → generation_failed → ready でも組み直す(到着順が逆)", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyPeerStatus(s, "p1", "ready"); // 世代1開始
+    applyPeerStatus(s, "p1", "error"); // peer の失敗が先に届く
+    applyGenerationFailed(s, "req", 1); // requester の失敗が後から届く
+    const eff = applyPeerStatus(s, "p1", "ready");
+
+    const start = firstOf(eff, "generation_start");
+    expect(start?.peerIds).toEqual(["p1"]);
+    expect(s.generation).toBe(2);
+  });
+
+  test("generation_failed → 同じclientIdで入り直し → ready で組み直す", () => {
+    const s = failedWithOnePeer();
+    applyHello(s, "p1", "peer", "P1"); // connecting に戻る
+    expect(s.generation).toBe(1); // 入り直した直後はまだ始まらない
+    const eff = applyPeerStatus(s, "p1", "ready");
+
+    expect(firstOf(eff, "generation_start")?.peerIds).toEqual(["p1"]);
+    expect(s.generation).toBe(2);
+  });
+
+  test("入り直し → generation_failed → ready でも組み直す(到着順が逆)", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyPeerStatus(s, "p1", "ready"); // 世代1開始
+    applyHello(s, "p1", "peer", "P1"); // 入り直しが先
+    applyGenerationFailed(s, "req", 1); // 失敗の記録が後
+    const eff = applyPeerStatus(s, "p1", "ready");
+
+    expect(firstOf(eff, "generation_start")?.peerIds).toEqual(["p1"]);
+    expect(s.generation).toBe(2);
+  });
+
+  test("ready を送り直しただけでは組み直さない(即時retry防止は維持)", () => {
+    const s = failedWithOnePeer();
+    const eff = applyPeerStatus(s, "p1", "ready");
+
+    expect(firstOf(eff, "generation_start")).toBeUndefined();
+    expect(s.generation).toBe(1);
+    expect(s.phase).toBe("idle");
+  });
+
+  test("error を受けた時点では組み直さない(復帰してから)", () => {
+    const s = failedWithOnePeer();
+    const eff = applyPeerStatus(s, "p1", "error");
+
+    expect(firstOf(eff, "generation_start")).toBeUndefined();
+    expect(s.phase).toBe("idle");
+  });
+
+  test("requesterが入り直しただけでは解除しない", () => {
+    // `useHonoSocket` はWebSocketが切れると自動で繋ぎ直し、hello まで送る。
+    // requester の hello を解除条件にすると、制御プレーンが一瞬切れただけで
+    // #56 の即時retry抑止を破れてしまう
+    const s = failedWithOnePeer();
+    applyHello(s, "req", "requester", "Req");
+    const eff = applyPeerStatus(s, "p1", "ready");
+
+    expect(firstOf(eff, "generation_start")).toBeUndefined();
+    expect(s.generation).toBe(1);
+  });
+
+  test("2台のうち1台がerrorなら、残りで組み直す", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "p2", "peer", "P2");
+    applyPeerStatus(s, "p1", "ready");
+    applyPeerStatus(s, "p2", "ready");
+    applyGenerationFailed(s, "req", 1);
+    const eff = applyPeerStatus(s, "p2", "error");
+
+    expect(firstOf(eff, "generation_start")?.peerIds).toEqual(["p1"]);
+    expect(s.generation).toBe(2);
+  });
+
+  test("同じerrorが何度来ても世代開始のループにならない", () => {
+    // #79 は PeerManager / WebRTC / Runtime の3経路から error を送る。
+    // 1つの失敗で複数回届いても、状態機械が壊れないこと
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "p2", "peer", "P2");
+    applyPeerStatus(s, "p1", "ready");
+    applyPeerStatus(s, "p2", "ready");
+    applyGenerationFailed(s, "req", 1);
+
+    const first = applyPeerStatus(s, "p2", "error");
+    expect(firstOf(first, "generation_start")?.peerIds).toEqual(["p1"]);
+    expect(s.generation).toBe(2);
+
+    // 2回目・3回目は世代を進めない
+    expect(firstOf(applyPeerStatus(s, "p2", "error"), "generation_start")).toBeUndefined();
+    expect(firstOf(applyPeerStatus(s, "p2", "error"), "generation_start")).toBeUndefined();
+    expect(s.generation).toBe(2);
+  });
+});
