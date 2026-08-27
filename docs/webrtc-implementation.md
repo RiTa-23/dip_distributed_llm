@@ -158,6 +158,8 @@ function teardownAllConnections() {
 
 「1台が接続に失敗しても、残りで世代が始まる」を1台のPCで確かめる手順です。#78・#79の受け入れ条件がこの確認を要求しています。
 
+**2026/8/27時点では、この手順を最後まで踏んでも残りで世代は始まりません。** #79(参加者が `peer_status: "error"` を送る)までは通りますが、そこから先が止まります。理由は手順5のあとに書きました。つまりこれは現状では**受け入れ条件の未達を再現する手順**で、発表者側に失敗検知の時間切れが入って初めて「確認する手順」になります。
+
 **素直にやると3か所でつまずきます**(いずれも実際に踏みました)。順番に潰していきます。
 
 #### 1. Honoを起動する
@@ -172,10 +174,11 @@ bun run --cwd apps/server dev
 
 `apps/web/.env.local` を作ります(`*.local` は [`apps/web/.gitignore`](../apps/web/.gitignore) の対象なのでコミットされません)。
 
-```
+```dotenv
 VITE_HONO_WS_URL=wss://localhost:8443/ws
 ```
 
+- 中身は手順1で確かめた待ち受け先に合わせます。証明書を作らず http の 3000 で起動した場合は `ws://localhost:3000/ws` です。[`config.ts`](../apps/web/src/config.ts) の `WS_URL_OVERRIDE` はこの値をそのまま接続先にするので、スキームとポートが食い違うと繋がりません
 - **つまずき1: `VITE_HONO_ORIGIN` 経由のviteプロキシは使えません。** 自己署名証明書へのWebSocketプロキシが `secure: false` を付けても完了せず、`new WebSocket('ws://localhost:5173/ws')` が `readyState = 0`(CONNECTING)のまま無応答になります
 - 症状が分かりにくいのが厄介で、**画面は `idle` のまま何のエラーも出ません**。`参加する` を押しても無反応に見えます。`useHonoSocket` は接続が開くまでフェーズを動かさないためです
 - WebSocketにCORSは無いので、別オリジンへ直接繋いで構いません。証明書が mkcert 由来でブラウザに信頼されていれば、これで通ります
