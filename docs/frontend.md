@@ -93,16 +93,14 @@ idle ─→ preparing ─→ waiting ─→ connecting ─→ active
 
 ### 発表者だけ、もう1本のトラックが並行する
 
-モデル(GGUF)のダウンロードは数GBあるので、編成の進行とは**独立して**画面を開いた瞬間から走ります。
+モデル(GGUF)のダウンロードは数GBあるので、編成の進行とは**独立して**画面を開いた瞬間から走ります(`hooks/useModelDownload.ts`)。`fetch` + `ReadableStream` で実測しますが、**取得したバイトは数えたら捨てています**。①のWASMへ渡す経路は #71 の範囲で、このトラックは進捗表示までが対象です。
 
 ```text
 トラックA  ダウンロード ─────────────────→ 完了
 トラックB  preparing → waiting → connecting → active
-                                              ↓
-                          両方そろって初めて入力欄が開く
 ```
 
-つまり入力欄が使えるかどうかは `phase === "active" && modelReady` の **AND** です。片方だけでは開きません。
+**取得に失敗しても送信は止めません**(本人判断、2026/8/27)。モデル本体はまだ推論に使われていないため、GGUFが置いてあるかどうかだけでデモが死ぬのを避けています。入力欄が使えるかどうかは `phase === "active"` だけで決まり、モデルDLの状態とは独立です。
 
 ## ディレクトリ
 
@@ -396,7 +394,7 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 | ~~`RequesterView` の配布率~~ | — | 本物になりました(2026/8/25)。開いたDataChannelの数 ÷ 繋ぐべき人数です |
 | `PeerView` のエンジン起動 | ①のビルドが無いあいだだけ2.2秒待つ([`webrtc/wasmEngine.ts`](../apps/web/src/webrtc/wasmEngine.ts)) | 同じファイル。`llmlet-mod.js` が置かれれば自動でそちらを通る(#71) |
 | ~~`PeerView` の処理回数・受信量~~ | — | 実測になりました(#47)。数えているのは [`webrtc/peerStats.ts`](../apps/web/src/webrtc/peerStats.ts)。①のWASMが載るまでは動かないので画面には `—` が出ます。乱数へ戻すときは `VITE_FAKE_METRICS=1` |
-| `RequesterView` のモデルDL | 一定速度のタイマー | `fetch` + `ReadableStream` の実測 |
+| ~~`RequesterView` のモデルDL~~ | — | 本物になりました(#80)。`fetch` + `ReadableStream` の実測です。受信バイトは数えたら捨てるので、①へ渡す経路(#71)とは別です |
 | `RequesterView` の生成 | 固定文を1文字ずつ | ①の `onToken()` |
 | `RequesterView` の「計算中」の移動 | 12文字ごとに次のピアへ | ①の `onPeerTurn()` |
 

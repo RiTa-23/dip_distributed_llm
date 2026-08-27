@@ -9,7 +9,9 @@ import { useStalled } from "../hooks/useStalled";
 import { useWebrtcSignaling } from "../hooks/useWebrtcSignaling";
 import { usePeerManager } from "../hooks/usePeerManager";
 import type { GenerationEvent } from "../hooks/usePeerManager";
+import { useModelDownload } from "../hooks/useModelDownload";
 import { getClientId } from "../lib/clientId";
+import { formatBytes } from "../lib/format";
 import { CONNECT_STALL_MS, MODEL_NAME, TOTAL_LAYERS } from "../config";
 import type { Phase } from "../types/cluster";
 import styles from "./RequesterView.module.css";
@@ -51,7 +53,7 @@ export function RequesterView() {
     myId,
     role: "requester",
   });
-  const [modelProgress, setModelProgress] = useState(0);
+  const modelDownload = useModelDownload();
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [streaming, setStreaming] = useState("");
   const [generating, setGenerating] = useState(false);
@@ -110,19 +112,10 @@ export function RequesterView() {
   const distribution =
     rtc.expectedIds.length === 0 ? 0 : rtc.openIds.length / rtc.expectedIds.length;
 
-  const modelReady = modelProgress >= 1;
-  const canSubmit = phase === "active" && modelReady && !generating;
-
-  // トラックA: モデルのダウンロード。フェーズとは独立に、開いた瞬間から進む
-  useEffect(() => {
-    let v = 0;
-    const id = window.setInterval(() => {
-      v = Math.min(1, v + 0.02);
-      setModelProgress(v);
-      if (v >= 1) clearInterval(id);
-    }, 80);
-    return () => clearInterval(id);
-  }, []);
+  // モデル本体はまだ推論に使われていない(①のWASMへ渡すのは #71 の範囲)ので、
+  // 取得に失敗しても送信ボタンはブロックしない(本人判断、2026/8/27)。GGUFが
+  // 置いてあるかどうかだけでデモが死ぬのを避ける
+  const canSubmit = phase === "active" && !generating;
 
   // トラックB: 編成。接続できたら名乗り、すぐ準備完了とする(発表者に起動待ちはない)
   useEffect(() => {
@@ -284,9 +277,16 @@ export function RequesterView() {
 
           <div>
             <div className={styles.sectionLabel}>モデル</div>
-            <ProgressBar value={modelProgress} label="モデルのダウンロード" />
+            {modelDownload.status === "loading" && modelDownload.progress !== null && (
+              <ProgressBar value={modelDownload.progress} label="モデルのダウンロード" />
+            )}
             <div className={styles.dim}>
-              {modelReady ? "読み込み済み" : `${Math.round(modelProgress * 100)}%`}
+              {modelDownload.status === "loading" &&
+                (modelDownload.total !== null
+                  ? `${formatBytes(modelDownload.received)} / ${formatBytes(modelDownload.total)}`
+                  : formatBytes(modelDownload.received))}
+              {modelDownload.status === "done" && "読み込み済み"}
+              {modelDownload.status === "failed" && "モデルを取得できませんでした"}
             </div>
           </div>
 
