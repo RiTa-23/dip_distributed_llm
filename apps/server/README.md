@@ -109,28 +109,58 @@ Aレコードは Cloudflare の管理画面で1件作っておく。**必ず「D
 # 1. 会場Wi-Fiにつないでから、Aレコードを今のLAN IPに更新
 CF_API_TOKEN=... CF_ZONE_ID=... CF_RECORD_NAME=llm.example.com bun run dns
 
-# 2. 本番証明書と公開オリジンを指定して起動
-TLS_CERT=./certs/prod/cert.pem \
-TLS_KEY=./certs/prod/key.pem \
-PUBLIC_ORIGIN=https://llm.example.com:8443 \
+# 2. 起動するだけ。certs/prod/ があれば自動でそちらが使われる
 bun run dev
 ```
 
-### 環境変数
+**環境変数は要らない。** 当日に長いコマンドを打ち間違えないよう、証明書を置くだけで
+デモ用の構成になるようにしてある。
+
+### 証明書の選ばれ方
+
+起動時に上から順に探し、最初に見つかったものを使う。
+
+| 優先 | 場所 | どういうときに使われるか |
+|---|---|---|
+| 1 | `TLS_CERT` / `TLS_KEY` | 明示指定。置き場所を自由にしたいとき |
+| 2 | `certs/prod/{cert,key}.pem` | **本番デモ用。あればこれが既定** |
+| 3 | `certs/{cert,key}.pem` | 開発用(mkcert)。`bun run cert` が生成する先 |
+| — | (どれも無い) | HTTPで起動(CI・クイック確認用) |
+
+起動ログにどれが選ばれたかが出るので、意図と違えばそこで気づける。
+
+```
+証明書: ./certs/prod/cert.pem — 本番デモ用 certs/prod(公開CA。飛び入り参加者に警告が出ない)
+参加URL: https://llm.example.com:8443 を既定にします
+```
+
+**開発用(mkcert)の使い方は今まで通り。** `certs/prod/` を置かなければ従来と同じ動作で、
+ネットワークが無い場所でも `bun run cert` → `bun run dev` だけで完結する。
+
+**`bun run cert` が本番証明書を壊すことはない。** 書き込む先が `certs/` で、本番用の
+`certs/prod/` とは別だから。優先順位も変わらないので、会場で誤って叩いても
+デモ用の構成のまま動き続ける。
+
+### 参加者に配るURLの決まり方
+
+`certs/prod/` の証明書を使っているときは、**その証明書のSANからドメインを読み取って**
+QRの既定値にする。配布URLと証明書が食い違うと警告が出るので、設定を別に持たず
+証明書そのものを情報源にしている。
+
+mkcertの証明書はDNS名が `localhost` しか無いため、開発中は自然と従来通り
+LAN IPのURLだけが返る。
+
+**ドメインを使っていても LAN IPのURLは候補から消えない。** 会場のDNSが
+プライベートIPへの応答を捨てる場合(下記)に、発表者画面のQRを切り替えて
+退避できるようにしてある。
+
+### 環境変数(すべて任意)
 
 | 変数 | 用途 |
 |---|---|
-| `TLS_CERT` / `TLS_KEY` | 証明書のパス。既定は `./certs/{cert,key}.pem`(mkcert用) |
-| `PUBLIC_ORIGIN` | 参加者に配るオリジン。`/join-info` の先頭に入り、QRの既定値になる |
+| `TLS_CERT` / `TLS_KEY` | 証明書のパスを明示指定する。両方揃っているときだけ有効 |
+| `PUBLIC_ORIGIN` | 参加者に配るオリジンを上書きする。既定は証明書から決まる |
 | `CF_API_TOKEN` / `CF_ZONE_ID` / `CF_RECORD_NAME` | `bun run dns` 用 |
-
-**`TLS_CERT` / `TLS_KEY` を分けてあるのは事故防止のため。** 既定のパスのままだと、
-会場で何かの拍子に `bun run setup`(= `bun run cert`)を叩いた瞬間に本番証明書が
-mkcert産に上書きされ、全端末に警告が出る。本番用は `certs/prod/` に置いて分離する。
-
-`PUBLIC_ORIGIN` を設定しても **LAN IPのURLは候補から消えない**。会場のDNSが
-プライベートIPへの応答を捨てる場合(下記)に、発表者画面のQRを切り替えて
-退避できるようにしてある。
 
 ### 会場でうまくいかないとき
 

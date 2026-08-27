@@ -6,7 +6,7 @@
 
 ## 0. 前日までに終わらせておくこと
 
-- [ ] `certs/prod/{cert,key}.pem` に Let's Encrypt の証明書がある
+- [ ] `certs/prod/{cert,key}.pem` に Let's Encrypt の証明書がある(**置くだけで既定になる**)
 - [ ] Cloudflare にAレコードが1件ある(**DNS only / 灰色の雲**)
 - [ ] `CF_API_TOKEN` / `CF_ZONE_ID` / `CF_RECORD_NAME` を手元に控えた
 - [ ] `bun run setup` 相当が済んでいる(モデル・`web-dist` が配置済み)
@@ -47,14 +47,15 @@ https://llm.example.com:8443/
 
 ```bash
 cd apps/server
-TLS_CERT=./certs/prod/cert.pem \
-TLS_KEY=./certs/prod/key.pem \
-PUBLIC_ORIGIN=https://llm.example.com:8443 \
 bun run dev
 ```
 
-- [ ] `tls=true` で起動した
+- [ ] 起動ログの「証明書:」が **`certs/prod`** になっている
+- [ ] 起動ログの「参加URL:」が **ドメイン** になっている
 - [ ] `curl -s https://llm.example.com:8443/join-info` の先頭がドメインのURL
+
+> 環境変数は要らない。`certs/prod/` があれば自動でそちらが使われる。
+> ログが `certs`(mkcert)になっていたら、本番証明書が置けていない。
 
 ## 5. 参加者端末で最終確認
 
@@ -71,14 +72,13 @@ bun run dev
 会場のDNSがプライベートIPへの応答を捨てている(DNSリバインディング保護)。
 **その場では直せない。** 方式Cに切り替える。
 
-1. Honoを **mkcertの証明書**で起動し直す
+1. **Honoは止めなくてよい。** 発表者画面のQR下の候補から **LAN IPのURL** を選ぶ
+   - 参加者には証明書警告が出るが、つながる
+   - LAN IPの候補は常に残してあるので、切り替えるだけで済む
+2. 参加者に下の案内をする
 
-   ```bash
-   PUBLIC_ORIGIN= TLS_CERT= TLS_KEY= bun run dev
-   ```
-
-2. 発表者画面のQR下の候補から **LAN IPのURL** を選ぶ
-3. 参加者に下の案内をする
+> 証明書ごと mkcert に戻したい場合は `certs/prod` を一時的にリネームして再起動する
+> (`mv certs/prod certs/prod.off`)。ただし**警告は結局出る**ので、通常は上の切り替えで十分。
 
 **参加者への案内(そのまま読む):**
 

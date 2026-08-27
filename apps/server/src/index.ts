@@ -1,10 +1,12 @@
 import { Hono } from "hono";
 import { createBunWebSocket, serveStatic } from "hono/bun";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { X509Certificate } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { Coordinator, type Socket } from "./coordinator";
 import { parseClientMessage } from "./parse";
 import { buildJoinUrls } from "./lanAddress";
+import { pickTlsFiles, publicHostFromSan, publicOriginFrom } from "./tlsConfig";
 
 const app = new Hono();
 const { upgradeWebSocket, websocket } = createBunWebSocket();
@@ -15,20 +17,34 @@ const coordinator = new Coordinator((line) => console.log(line));
 // 証明書があれば HTTPS、無ければ HTTP で起動(CI・クイック確認用)。
 // フロント・/ws・モデルを 1 つの HTTPS オリジンから配信する(単一オリジン)。
 //
-// パスを環境変数で差し替えられるようにしてあるのは、本番用の証明書を
-// `bun run cert`(mkcert)に上書きされないようにするため(#23)。既定のままだと
-// 会場で setup を叩いた拍子にLE証明書がmkcert産に置き換わり、全端末に警告が出る。
-//   本番: TLS_CERT=./certs/prod/cert.pem TLS_KEY=./certs/prod/key.pem bun run dev
-const CERT = process.env.TLS_CERT ?? "./certs/cert.pem";
-const KEY = process.env.TLS_KEY ?? "./certs/key.pem";
-const hasTls = existsSync(CERT) && existsSync(KEY);
+// **本番デモ用(certs/prod/)があればそちらを優先する**(#23)。当日に環境変数を
+// 並べなくてよいようにするため。無ければ従来通り mkcert(certs/)に落ちるので、
+// ネットワークが使えない場所での開発は今まで通り動く。判定は tlsConfig.ts。
+const tls = pickTlsFiles(existsSync, process.env);
+const hasTls = tls !== null;
 const port = Number(process.env.PORT ?? (hasTls ? 8443 : 3000));
 
-// 本番デモで参加者に配るオリジン(#23)。実在ドメイン + Let's Encrypt の証明書で
-// 警告ゼロにするための設定。設定するとQRの既定値がこれになる。
-//   例: PUBLIC_ORIGIN=https://llm.example.com:8443
-// 未設定なら従来通りLAN IPのURLだけを返す。
-const PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN;
+/**
+ * 参加者に配るオリジン(#23)。QRの既定値になる。
+ *
+ * 既定では**証明書のSANから決める**。配布URLが証明書と食い違うと警告が出るので、
+ * 設定を別に持たず証明書そのものを情報源にする。mkcertの証明書はDNS名が
+ * `localhost` だけなので、ここは null になり従来通りLAN IPのURLだけが返る。
+ * PUBLIC_ORIGIN を設定すればそちらが優先される。
+ */
+function resolvePublicOrigin(): string | undefined {
+  const fromEnv = process.env.PUBLIC_ORIGIN;
+  if (fromEnv !== undefined && fromEnv.trim() !== "") return fromEnv;
+  if (tls === null) return undefined;
+  try {
+    const san = new X509Certificate(readFileSync(tls.cert)).subjectAltName;
+    return publicOriginFrom(publicHostFromSan(san), port) ?? undefined;
+  } catch {
+    // 証明書が読めない形でも起動自体は止めない(TLSの起動時に別途失敗する)
+    return undefined;
+  }
+}
+const PUBLIC_ORIGIN = resolvePublicOrigin();
 
 // --- 接続の生存確認(#55) ---
 // 蓋を閉じたPCやWi-Fiが切れた端末は FIN を送らないため、TCPが死ぬまで onClose が来ない。
@@ -202,8 +218,22 @@ app.get("*", serveStatic({ path: "./public/web-dist/index.html" }));
 // 生きている接続の idleTimeout を延ばし、応答の無い接続を炙り出す(#55)
 setInterval(() => coordinator.pingAll(), WS_PING_INTERVAL_MS);
 
+const TLS_LABEL: Record<string, string> = {
+  env: "TLS_CERT/TLS_KEY で明示指定",
+  demo: "本番デモ用 certs/prod(公開CA。飛び入り参加者に警告が出ない)",
+  local: "開発用 certs(mkcert。rootCA導入済みの端末のみ警告ゼロ)",
+};
+
 console.log(
   `Hono server listening on ${hasTls ? "https" : "http"}://localhost:${port} (tls=${hasTls})`,
+);
+if (tls !== null) {
+  console.log(`  証明書: ${tls.cert} — ${TLS_LABEL[tls.source] ?? tls.source}`);
+}
+console.log(
+  PUBLIC_ORIGIN === undefined
+    ? "  参加URL: LAN IP のみ(本番デモ用の証明書を置くとドメインが既定になります)"
+    : `  参加URL: ${PUBLIC_ORIGIN} を既定にします`,
 );
 
 export default {
@@ -217,5 +247,5 @@ export default {
       if (state) state.pending = false;
     },
   },
-  ...(hasTls ? { tls: { cert: Bun.file(CERT), key: Bun.file(KEY) } } : {}),
+  ...(tls !== null ? { tls: { cert: Bun.file(tls.cert), key: Bun.file(tls.key) } } : {}),
 };
