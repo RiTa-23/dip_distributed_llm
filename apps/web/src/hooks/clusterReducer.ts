@@ -26,7 +26,14 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
 
     case "socket_closed":
       // 世代も戻す。残すと離脱後の上端に「0人 · 第N世代」が出る
-      return { ...s, phase: "idle", roster: [], generation: 0, abortReason: null };
+      return {
+        ...s,
+        phase: "idle",
+        roster: [],
+        generation: 0,
+        abortReason: null,
+        generationPeerIds: [],
+      };
 
     case "local_ready":
       // 編成が先に始まっていた場合に巻き戻さない
@@ -46,6 +53,7 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
         generation: 0,
         errorMessage: null,
         abortReason: null,
+        generationPeerIds: [],
       };
 
     case "dev_set_phase":
@@ -59,7 +67,13 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
 
         case "generation_start":
           // 編成し直しが済んだ。きっかけはもう表示しない
-          return { ...s, generation: a.msg.generation, phase: "connecting", abortReason: null };
+          return {
+            ...s,
+            generation: a.msg.generation,
+            phase: "connecting",
+            abortReason: null,
+            generationPeerIds: a.msg.peerIds,
+          };
 
         case "generation_aborted":
           // 古い世代の通知が遅れて届くことがある。捨てないと正常な編成が巻き込まれる

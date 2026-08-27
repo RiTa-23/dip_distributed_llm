@@ -57,6 +57,12 @@ export type ClusterState = {
    * 編成が終わったら(次の世代が始まったら)null に戻す
    */
   abortReason: AbortReason | null;
+  /**
+   * 現在の世代の編成に入っているpeerのID(generation_startのpeerIdsをそのまま持つ)。
+   * roster(参加者一覧)には status: "error" のpeerも含まれるため、層の割り当ては
+   * これで絞り込んだpeerに対してのみ行う(#81)
+   */
+  generationPeerIds: string[];
 };
 
 export const initialClusterState: ClusterState = {
@@ -65,4 +71,5 @@ export const initialClusterState: ClusterState = {
   generation: 0,
   errorMessage: null,
   abortReason: null,
+  generationPeerIds: [],
 };
