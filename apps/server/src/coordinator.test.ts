@@ -5,15 +5,20 @@ import type {
 } from "@dip_distributed_llm/shared-types/messages";
 import { Coordinator, type Socket } from "./coordinator";
 
-/** 送られたメッセージを記録するフェイク Socket。 */
-function fakeSocket(): Socket & { sent: ServerMessage[] } {
+/** 送られたメッセージと ping の回数を記録するフェイク Socket。 */
+function fakeSocket(): Socket & { sent: ServerMessage[]; pings: number } {
   const sent: ServerMessage[] = [];
-  return {
+  const self = {
     sent,
+    pings: 0,
     send: (d: string) => {
       sent.push(JSON.parse(d) as ServerMessage);
     },
+    ping: () => {
+      self.pings += 1;
+    },
   };
+  return self;
 }
 
 function typesOf(s: { sent: ServerMessage[] }): string[] {
@@ -43,7 +48,7 @@ describe("Coordinator wiring", () => {
       fromId: "p1",
       payload: { kind: "ice-candidate", candidate: null },
     };
-    expect(() => co.signal(signal)).not.toThrow();
+    expect(() => co.signal("p1", signal)).not.toThrow();
   });
 
   test("signal は targetId の socket にだけ届く", () => {
@@ -61,9 +66,65 @@ describe("Coordinator wiring", () => {
       fromId: "a",
       payload: { kind: "offer", sdp: "v=0..." },
     };
-    co.signal(signal);
+    co.signal("a", signal);
     expect(b.sent).toEqual([signal]);
     expect(a.sent).toEqual([]);
+  });
+
+  test("fromId を騙った signal は中継されない(#54)", () => {
+    const co = new Coordinator();
+    const a = fakeSocket();
+    const b = fakeSocket();
+    co.hello("a", "peer", "A", a);
+    co.hello("b", "peer", "B", b);
+    a.sent.length = 0;
+    b.sent.length = 0;
+
+    const spoofed: WebrtcSignalMessage = {
+      type: "webrtc_signal",
+      targetId: "b",
+      fromId: "someone-else",
+      payload: { kind: "offer", sdp: "v=0..." },
+    };
+    co.signal("a", spoofed); // 送信者は a なのに a 以外を名乗っている
+    expect(b.sent).toEqual([]);
+  });
+
+  test("pingAll は全接続にpingを送る(#55)", () => {
+    const co = new Coordinator();
+    const a = fakeSocket();
+    const b = fakeSocket();
+    co.hello("a", "peer", "A", a);
+    co.hello("b", "peer", "B", b);
+
+    co.pingAll();
+    expect(a.pings).toBe(1);
+    expect(b.pings).toBe(1);
+  });
+
+  test("pingAll は切断済みの接続には送らない(#55)", () => {
+    const co = new Coordinator();
+    const a = fakeSocket();
+    const b = fakeSocket();
+    co.hello("a", "peer", "A", a);
+    co.hello("b", "peer", "B", b);
+    co.disconnect("a", a);
+
+    co.pingAll();
+    expect(a.pings).toBe(0);
+    expect(b.pings).toBe(1);
+  });
+
+  test("ping を実装しない Socket があっても pingAll は落ちない(#55)", () => {
+    const co = new Coordinator();
+    const noPing = {
+      sent: [] as string[],
+      send(d: string) {
+        this.sent.push(d);
+      },
+    };
+    co.hello("a", "peer", "A", noPing);
+    expect(() => co.pingAll()).not.toThrow();
   });
 
   test("identity ガード: 旧接続の onClose は新接続のエントリを消さない", () => {
@@ -318,7 +379,7 @@ describe("状態遷移のログ(#58)", () => {
     co.hello("a", "peer", "A", fakeSocket());
     co.hello("b", "peer", "B", fakeSocket());
     const before = lines.length;
-    co.signal({
+    co.signal("a", {
       type: "webrtc_signal",
       targetId: "b",
       fromId: "a",

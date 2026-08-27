@@ -59,6 +59,15 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
       if (typeof accepting !== "boolean") return null;
       return { type: "requester_accepting", accepting };
     }
+    case "generation_failed": {
+      const { generation } = raw;
+      // 世代番号は非負整数。NaN や小数が来ると現世代との比較が常に外れて無視され、
+      // 「送っているのに固まったまま」という分かりにくい不具合になる
+      if (typeof generation !== "number" || !Number.isInteger(generation) || generation < 0) {
+        return null;
+      }
+      return { type: "generation_failed", generation };
+    }
     default:
       return null;
   }
