@@ -46,6 +46,7 @@ export function RequesterView() {
   const streamingRef = useRef("");
   const toastTimer = useRef<number | null>(null);
   const previousRosterSize = useRef(state.roster.length);
+  const previousGenerating = useRef(generating);
   const [toast, setToast] = useState<string | null>(null);
   const [myId] = useState(() => getClientId("requester"));
 
@@ -121,6 +122,15 @@ export function RequesterView() {
       dispatch({ type: "datachannel_open" });
     }
   }, [phase, rtc.status, dispatch]);
+
+  // 推論中は新規peerの加入による再編成を保留させる(#50)。生成の開始・終了は
+  // run() 側のタイマーとtoken/generation_end受信の両方から起きるので、
+  // 発生源を1箇所に絞れる generating の変化を見て送る
+  useEffect(() => {
+    if (previousGenerating.current === generating) return;
+    previousGenerating.current = generating;
+    send({ type: "requester_accepting", accepting: !generating });
+  }, [generating, send]);
 
   useEffect(() => {
     const currentSize = state.roster.length;
