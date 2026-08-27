@@ -12,7 +12,7 @@
 
 ## リポジトリ構成
 
-```
+```text
 apps/web/               React (requester画面 / peer参加画面)
 apps/server/             Hono コーディネータ
 packages/shared-types/    WebSocketメッセージの型定義(messages.ts)
@@ -20,6 +20,7 @@ native/                   WASM版llama.cpp・RPCパッチ(別ビルドパイプ�
 docs/                     設計ドキュメント
 ```
 
+`native/` はまだリポジトリに存在しない(①の担当分。WASMビルドが出てから追加される)。
 詳しくは [docs/directory-structure.md](./docs/directory-structure.md) を参照。
 
 ## 環境構築
@@ -40,6 +41,22 @@ powershell -c "irm bun.sh/install.ps1 | iex"
 
 インストール後、ターミナルを開き直して `bun --version` が表示されることを確認する。
 
+### mkcertのインストール
+
+**開発でもHTTPSが要る。** WASM版llama.cppがpthread(`SharedArrayBuffer`)を使うため、
+ブラウザが secure context かつ cross-origin isolated である必要がある。
+`http://<LAN IP>` では条件を満たさず、参加者の画面が動かない。
+
+```bash
+# macOS
+brew install mkcert nss
+
+# Windows
+winget install FiloSottile.mkcert
+```
+
+詳しくは [apps/server/README.md](./apps/server/README.md) を参照。
+
 ### インストール
 
 ```bash
@@ -48,15 +65,51 @@ bun install
 
 リポジトリルートで一括インストール(`apps/*`・`packages/*`のBun workspaces)。
 
+### 初回セットアップ
+
+**この節のコマンドはすべてリポジトリルートから実行する。** `--cwd` で対象の
+workspaceを指定するので、`cd` して回る必要はない。
+
+```bash
+bun run --cwd apps/server setup
+```
+
+証明書・ダミーモデル・フロント成果物をまとめて用意する。**これをやらないと
+HTTPSにならず、モデルの配信先も空になる。**
+
 ### 起動
+
+**通常はこれだけ。** Honoがフロントも配信するので、単一オリジンで完結する。
+
+```bash
+bun run --cwd apps/server dev
+```
+
+`https://localhost:8443` で開く。同じLANの他端末からは、発表者画面のQR(または
+`/join-info` が返すURL)を使う。
+
+**フロントを触るときだけ**、Viteの開発サーバを併用する(ホットリロードが効く)。
+ターミナルを2つ使う。
 
 ```bash
 # ターミナル1: Honoサーバ
-cd apps/server && bun run dev
-
-# ターミナル2: Reactアプリ
-cd apps/web && bun run dev
+bun run --cwd apps/server dev
 ```
+
+```bash
+# ターミナル2: Viteの開発サーバ
+VITE_HONO_ORIGIN=https://localhost:8443 bun run --cwd apps/web dev
+```
+
+**Windows (PowerShell)** は環境変数の渡し方が違う。
+
+```powershell
+# ターミナル2: Viteの開発サーバ
+$env:VITE_HONO_ORIGIN="https://localhost:8443"; bun run --cwd apps/web dev
+```
+
+`VITE_HONO_ORIGIN` を渡すと、Viteが `/ws`・`/join-info`・`/models` をHonoへ中継する。
+渡さないとこれらが届かず、画面が動かない。
 
 `native/`配下(llama.cppのWASMビルド)はEmscriptenという別ツールチェーンを使うため、Bun/npmのコマンドでは操作しない。ビルド方法は [docs/tech-selection-rationale.md](./docs/tech-selection-rationale.md) を参照。
 
@@ -81,8 +134,29 @@ bun run typecheck
 
 このほか `apps/web` / `apps/server` には `bun run dev` (開発サーバ起動)、`apps/web` には `bun run build` (本番ビルド) もある。
 
+`apps/server` には配信の準備と本番デモ用のスクリプトがある。
+
+| コマンド | 内容 |
+|---|---|
+| `bun run setup` | 下の3つをまとめて実行(初回はこれ) |
+| `bun run cert` | mkcertで開発用証明書を生成(`certs/{cert,key}.pem`) |
+| `bun run dummy-model` | ダミーのGGUFを配置(①のWASMが来るまでの仮) |
+| `bun run web:copy` | `apps/web` をビルドして `public/web-dist/` へコピー |
+| `bun run dns` | 本番デモ用。CloudflareのAレコードを今のLAN IPへ更新([#23](./docs/cert-setup-steps.md)) |
+
 これらは [.github/workflows/ci.yml](./.github/workflows/ci.yml) のCIでも同じスクリプトが実行される。`main`・`develop`へのpushとPull Requestで自動実行され、変更されたパス(`apps/web` / `apps/server` / `packages/shared-types`)に応じてジョブが分岐する。`native/`はビルドチェーンが別のためCI対象外。
 
 ## ドキュメント
 
 設計ドキュメント一式は [docs/README.md](./docs/README.md) の目次から辿れる。AIコーディングエージェント向けの前提情報は [AGENTS.md](./AGENTS.md) にまとめている。
+
+よく参照するもの:
+
+| 知りたいこと | 読むファイル |
+|---|---|
+| 全体アーキテクチャ・設計上の前提 | [docs/requirements.md](./docs/requirements.md) |
+| WebSocketメッセージの形式 | [docs/api-contract.md](./docs/api-contract.md) |
+| フロントの現状・画面の状態 | [docs/frontend.md](./docs/frontend.md) |
+| サーバの配信ルート・証明書まわり | [apps/server/README.md](./apps/server/README.md) |
+| 本番デモ用の証明書を取る手順 | [docs/cert-setup-steps.md](./docs/cert-setup-steps.md) |
+| デモ当日に上から順に叩く手順 | [docs/demo-checklist.md](./docs/demo-checklist.md) |
