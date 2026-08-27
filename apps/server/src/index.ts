@@ -19,6 +19,34 @@ const KEY = "./certs/key.pem";
 const hasTls = existsSync(CERT) && existsSync(KEY);
 const port = Number(process.env.PORT ?? (hasTls ? 8443 : 3000));
 
+// --- 接続の生存確認(#55) ---
+// 蓋を閉じたPCやWi-Fiが切れた端末は FIN を送らないため、TCPが死ぬまで onClose が来ない。
+// その間ロスターに残り続け、「全員ready」の判定が実態とずれる。
+//
+// Bunの `idleTimeout` は当てにしない(実測で、無応答の接続を閉じてくれなかった)。
+// 代わりにpingを撃って pong の有無を自分で数える。ブラウザはpingに自動でpongを
+// 返すので、フロント側の実装は要らない。
+// 検知までは最長で間隔の2倍かかる(1回落としただけでは切らないため)。
+const WS_PING_INTERVAL_SEC = Number(process.env.WS_PING_INTERVAL_SEC ?? 30);
+const WS_PING_INTERVAL_MS = Math.max(1000, WS_PING_INTERVAL_SEC * 1000);
+
+/**
+ * 接続ごとの応答状況。キーはBunの ServerWebSocket そのもの。
+ * WeakMap にしておくと、接続が消えたときに一緒に回収される。
+ */
+const awaitingPong = new WeakMap<object, { pending: boolean }>();
+
+/** Honoの型には出てこないが、Bunの ServerWebSocket が持っているもの。 */
+type PingableSocket = { ping: () => void; close: (code?: number, reason?: string) => void };
+
+function asPingable(raw: unknown): PingableSocket | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const c = raw as Partial<PingableSocket>;
+  return typeof c.ping === "function" && typeof c.close === "function"
+    ? (c as PingableSocket)
+    : null;
+}
+
 // すべてのレスポンスに COOP/COEP を付与する(#13)。
 // WASM版llama.cppがpthread(SharedArrayBuffer)を使うため cross-origin isolation が必須。
 // secure context(HTTPS)と合わせて初めて crossOriginIsolated === true になる。
@@ -55,6 +83,24 @@ app.get(
               // 送信先が閉じかけ。無視して他の宛先を続行。
             }
           },
+          ping: () => {
+            const sock = asPingable(ws.raw);
+            if (!sock) return;
+            const state = awaitingPong.get(sock) ?? { pending: false };
+            awaitingPong.set(sock, state);
+            try {
+              if (state.pending) {
+                // 前回のpingにpongが返っていない。応答が途絶えたとみなして閉じる。
+                // close すると onClose が走り、ロスターからも外れる(#55)
+                sock.close(1001, "no pong");
+                return;
+              }
+              state.pending = true;
+              sock.ping();
+            } catch {
+              // 既に閉じかけ。次の巡回か onClose で片付く
+            }
+          },
         };
       },
       onMessage(evt, ws) {
@@ -80,7 +126,8 @@ app.get(
             if (clientId) coordinator.peerStatus(clientId, msg.status); // hello 前は無視
             break;
           case "webrtc_signal":
-            if (clientId) coordinator.signal(msg);
+            // fromId が本人かどうかは roster 側で見る(#54)
+            if (clientId) coordinator.signal(clientId, msg);
             break;
           case "requester_accepting":
             if (clientId) coordinator.requesterAccepting(clientId, msg.accepting);
@@ -130,6 +177,9 @@ app.use("/*", serveStatic({ root: "./public/web-dist" }));
 // /models・/wasm は上で処理済みなのでここには来ない。
 app.get("*", serveStatic({ path: "./public/web-dist/index.html" }));
 
+// 生きている接続の idleTimeout を延ばし、応答の無い接続を炙り出す(#55)
+setInterval(() => coordinator.pingAll(), WS_PING_INTERVAL_MS);
+
 console.log(
   `Hono server listening on ${hasTls ? "https" : "http"}://localhost:${port} (tls=${hasTls})`,
 );
@@ -137,6 +187,13 @@ console.log(
 export default {
   port,
   fetch: app.fetch,
-  websocket,
+  websocket: {
+    ...websocket,
+    // pong を受けたら「応答あり」に戻す(#55)。Honoのハンドラには無いので足す
+    pong(ws: object) {
+      const state = awaitingPong.get(ws);
+      if (state) state.pending = false;
+    },
+  },
   ...(hasTls ? { tls: { cert: Bun.file(CERT), key: Bun.file(KEY) } } : {}),
 };
