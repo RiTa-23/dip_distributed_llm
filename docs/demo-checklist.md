@@ -23,7 +23,15 @@
 
 ```bash
 cd apps/server
-CF_API_TOKEN=... CF_ZONE_ID=... CF_RECORD_NAME=llm.example.com bun run dns
+
+# トークンは対話で入れる(コマンドラインに書くとシェル履歴に残る)
+read -rs -p "CF_API_TOKEN: " CF_API_TOKEN && echo
+export CF_API_TOKEN
+
+export CF_ZONE_ID=...          # ゾーン概要ページの値
+export CF_RECORD_NAME=llm.example.com
+
+bun run dns
 ```
 
 - [ ] `更新しました: ... → 10.x.x.x` が出た
@@ -33,7 +41,7 @@ CF_API_TOKEN=... CF_ZONE_ID=... CF_RECORD_NAME=llm.example.com bun run dns
 
 **参加者側の端末(スマホ)**のブラウザで開く:
 
-```
+```text
 https://llm.example.com:8443/
 ```
 
@@ -91,9 +99,19 @@ bun run dev
 
 ### 警告は出ないが参加できない
 
+参加者端末から発表者PCへ**そもそも届いているか**を先に切り分ける。
+
+- [ ] 参加者端末のブラウザで `https://<ドメイン>:8443/` が開く(HTTPSが到達している)
+- [ ] 参加して**ロスターに載る**(`/ws` のWebSocketが通っている)
+
+どちらも通らなければ、名前解決ではなく到達性の問題。
+
 - [ ] 発表者PCのファイアウォールが8443を塞いでいないか
 - [ ] APアイソレーション(端末同士が通信できない設定)でないか
-  → これだと WebRTC も張れないので、そもそもデモが成立しない
+
+APアイソレーションだと参加者端末から発表者PCへ一切届かないので、上の2つが両方落ちる。
+なお、この設定は参加後のWebRTC(P2P)も成立させないため、切ってもらえない会場では
+デモそのものが成り立たない。
 
 ### 途中でLAN IPが変わった
 

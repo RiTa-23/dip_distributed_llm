@@ -5,7 +5,7 @@ import { X509Certificate } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { Coordinator, type Socket } from "./coordinator";
 import { parseClientMessage } from "./parse";
-import { buildJoinUrls } from "./lanAddress";
+import { buildJoinUrls, normalizePublicOrigin } from "./lanAddress";
 import { pickTlsFiles, publicHostFromSan, publicOriginFrom } from "./tlsConfig";
 
 const app = new Hono();
@@ -230,11 +230,19 @@ console.log(
 if (tls !== null) {
   console.log(`  証明書: ${tls.cert} — ${TLS_LABEL[tls.source] ?? tls.source}`);
 }
-console.log(
-  PUBLIC_ORIGIN === undefined
-    ? "  参加URL: LAN IP のみ(本番デモ用の証明書を置くとドメインが既定になります)"
-    : `  参加URL: ${PUBLIC_ORIGIN} を既定にします`,
-);
+// 実際に採用される値をログに出す。設定した値がスキーム不一致などで捨てられたときに
+// 「既定にします」と出てしまうと、起動ログを見ても気づけない
+const effectiveOrigin = normalizePublicOrigin(PUBLIC_ORIGIN, hasTls ? "https" : "http");
+if (effectiveOrigin !== null) {
+  console.log(`  参加URL: ${effectiveOrigin} を既定にします`);
+} else if (PUBLIC_ORIGIN !== undefined) {
+  console.log(
+    `  参加URL: LAN IP のみ(指定された ${PUBLIC_ORIGIN} は使えないため無視しました。` +
+      `${hasTls ? "https" : "http"}:// で始まる絶対URLを指定してください)`,
+  );
+} else {
+  console.log("  参加URL: LAN IP のみ(本番デモ用の証明書を置くとドメインが既定になります)");
+}
 
 export default {
   port,

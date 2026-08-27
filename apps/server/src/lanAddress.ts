@@ -55,7 +55,7 @@ export function buildJoinUrls(
   publicOrigin?: string,
 ): string[] {
   const lan = pickLanAddresses(nics).map((ip) => `${scheme}://${ip}:${port}/`);
-  const publicUrl = normalizePublicOrigin(publicOrigin);
+  const publicUrl = normalizePublicOrigin(publicOrigin, scheme);
   return publicUrl === null ? lan : [publicUrl, ...lan];
 }
 
@@ -64,14 +64,23 @@ export function buildJoinUrls(
  *
  * 環境変数から来るので、書き間違いをそのままQRに載せない。空文字・相対パス・
  * http(s)以外を弾く考え方は `apps/web/src/lib/joinInfo.ts` の isHttpUrl と揃えてある。
+ *
+ * **起動中のスキームと一致しないものも弾く。** TLSで配信しているのに `http://` を
+ * 配ると繋がらないうえ secure context にならず、SharedArrayBuffer と WebGPU が
+ * 使えなくなる(逆にHTTP起動で `https://` を配っても繋がらない)。
+ * このプロジェクトはHono1本で単一オリジン配信するので、TLS終端を別に置く構成は無い。
+ *
+ * ポートは書かれた通りに扱う。省略されていれば省略のまま返すので、既定ポート以外で
+ * 配信しているなら呼び出し側がポートまで含めて渡すこと。
  */
-function normalizePublicOrigin(value: string | undefined): string | null {
+export function normalizePublicOrigin(value: string | undefined, scheme: string): string | null {
   if (value === undefined) return null;
   const trimmed = value.trim();
   if (trimmed === "") return null;
   try {
     const url = new URL(trimmed);
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (url.protocol !== `${scheme}:`) return null; // 配信中のスキームと食い違う
     // パス・クエリ・ハッシュは参加URLには要らない。オリジンだけ取り出す
     return `${url.origin}/`;
   } catch {

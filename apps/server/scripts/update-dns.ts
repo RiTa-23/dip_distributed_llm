@@ -107,11 +107,23 @@ if (argIp === undefined && detected.length > 1) {
 // --- 対象のAレコードを探す ---
 const listPath = `/zones/${zoneId}/dns_records?type=A&name=${encodeURIComponent(recordName)}`;
 const { result: found } = await callCloudflare(listPath, token);
-const records = Array.isArray(found) ? (found as { id?: string; content?: string }[]) : [];
+type ARecord = { id?: string; content?: string; proxied?: boolean };
+const records = Array.isArray(found) ? (found as ARecord[]) : [];
 
 if (records.length === 0) {
   console.error(`Aレコードが見つかりません: ${recordName}`);
   console.error("Cloudflareの管理画面で先に1件作っておいてください(DNS only / 灰色の雲)。");
+  process.exit(1);
+}
+// 同じ名前に複数のAレコードがあると、1件だけ書き換えても古いIPが返り続ける。
+// どれを直すべきか機械的には決められないので、勝手に選ばず止める
+if (records.length > 1) {
+  console.error(`Aレコードが ${records.length} 件あります: ${recordName}`);
+  for (const r of records) {
+    console.error(`  - ${r.content ?? "(不明)"}${r.proxied === true ? " (プロキシ有効)" : ""}`);
+  }
+  console.error("1件だけ残して、他はCloudflareの管理画面で削除してください。");
+  console.error("複数あると、更新しても古いIPが参加者に返ることがあります。");
   process.exit(1);
 }
 const record = records[0]!;
@@ -120,9 +132,14 @@ if (record.id === undefined) {
   process.exit(1);
 }
 
-if (record.content === ip) {
-  console.log(`${recordName} は既に ${ip} を指しています。更新は不要です。`);
+// プロキシが有効なままだと、IPが合っていても参加者は会場LANのHonoに届かない。
+// 「IPが合っている」だけで満足せず、プロキシまで見てから終わる
+if (record.content === ip && record.proxied === false) {
+  console.log(`${recordName} は既に ${ip} を指しています(DNS only)。更新は不要です。`);
   process.exit(0);
+}
+if (record.content === ip && record.proxied !== false) {
+  console.log(`${recordName} のIPは合っていますが、プロキシが有効です。DNS only に直します。`);
 }
 
 // --- 書き換える ---
@@ -141,12 +158,19 @@ const { result: updated } = await callCloudflare(
   { method: "PUT", body },
 );
 
-const after = (updated as { content?: string; proxied?: boolean } | null) ?? {};
-console.log(`更新しました: ${recordName} ${record.content ?? "(不明)"} → ${after.content ?? ip}`);
-if (after.proxied === true) {
-  console.error("警告: プロキシが有効になっています。DNS only(灰色の雲)に変更してください。");
+// 書けたつもりで進まないよう、応答を突き合わせてから成功と言う
+const after = (updated as ARecord | null) ?? {};
+if (after.content !== ip) {
+  console.error(`更新後のIPが一致しません: 期待 ${ip} / 実際 ${after.content ?? "(不明)"}`);
+  console.error("Cloudflareの管理画面で確認してください。");
   process.exit(1);
 }
+if (after.proxied !== false) {
+  console.error("更新後もプロキシが有効です。DNS only(灰色の雲)に変更してください。");
+  console.error("プロキシのままだと参加者は会場LANのHonoに届きません。");
+  process.exit(1);
+}
+console.log(`更新しました: ${recordName} ${record.content ?? "(不明)"} → ${after.content} (DNS only)`);
 
 console.log("\n次にやること:");
 console.log(`  1. 参加者の端末(会場Wi-Fi)で https://${recordName}:8443/ が開けるか試す`);

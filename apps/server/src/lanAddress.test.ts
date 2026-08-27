@@ -90,9 +90,35 @@ describe("buildJoinUrls", () => {
       expect(first).toBe("https://llm.example.com:8443/");
     });
 
-    test("既定ポートなら省略された形になる", () => {
-      const [first] = buildJoinUrls(nics, "https", 8443, "https://llm.example.com");
-      expect(first).toBe("https://llm.example.com/");
+    test("ポートは書かれた通りに扱う(8443で配信中なら8443を含めて渡す)", () => {
+      const [withPort] = buildJoinUrls(nics, "https", 8443, "https://llm.example.com:8443");
+      expect(withPort).toBe("https://llm.example.com:8443/");
+
+      // 省略されていれば省略のまま返す。443以外で配信しているなら呼び出し側の責任で
+      // ポートまで含めること(この形はTLSリスナが443のときだけ正しい)
+      const withoutPort = buildJoinUrls(nics, "https", 8443, "https://llm.example.com")[0];
+      expect(withoutPort).toBe("https://llm.example.com/");
+    });
+
+    describe("配信中のスキームと食い違うものは使わない", () => {
+      test("TLSで配信中に http:// を渡しても採用しない", () => {
+        expect(buildJoinUrls(nics, "https", 8443, "http://llm.example.com:8443")).toEqual([
+          "https://192.168.11.5:8443/",
+        ]);
+      });
+
+      test("HTTP起動中に https:// を渡しても採用しない", () => {
+        expect(buildJoinUrls(nics, "http", 3000, "https://llm.example.com:8443")).toEqual([
+          "http://192.168.11.5:3000/",
+        ]);
+      });
+
+      test("HTTP起動中の http:// は採用する", () => {
+        expect(buildJoinUrls(nics, "http", 3000, "http://llm.example.com:3000")).toEqual([
+          "http://llm.example.com:3000/",
+          "http://192.168.11.5:3000/",
+        ]);
+      });
     });
 
     describe("使えない値は黙って無視する(書き間違いをQRに載せない)", () => {
