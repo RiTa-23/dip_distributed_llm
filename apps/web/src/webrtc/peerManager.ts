@@ -88,11 +88,6 @@ export type DataChannelLike = {
 };
 
 export type PeerManagerOptions = {
-  /**
-   * `register_buf` で受け取った番地を解放する。実体はWASM側の `Module.release_conn`。
-   * このモジュールをEmscriptenのModuleに依存させないため外から渡す。
-   */
-  releaseBuf?: (ptr: number) => void;
   /** 異常の通知。画面に出す用で、制御には使わない */
   onError?: (message: string) => void;
   /** 1つの論理接続が溜めておける受信バイト数の上限。既定は `MAX_RECV_QUEUE_BYTES` */
@@ -225,7 +220,6 @@ function toBytes(data: unknown): Uint8Array | null {
 
 export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerManager {
   const {
-    releaseBuf,
     onError,
     maxRecvQueueBytes = MAX_RECV_QUEUE_BYTES,
     maxSendQueueBytes = MAX_SEND_QUEUE_BYTES,
@@ -400,10 +394,12 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
     if (queued >= 0) readyFds.splice(queued, 1);
     conn.recvBuf = [];
     conn.queuedBytes = 0;
-    if (conn.moduleBuf !== null) {
-      releaseBuf?.(conn.moduleBuf);
-      conn.moduleBuf = null;
-    }
+    // `moduleBuf` はここでは解放しない。受信バッファの所有権はWASMのglue側にあり、
+    // RPCを回しているpthreadで確保され、そのthreadの `Module._connbuf[fd]` に
+    // キャッシュされる。mainスレッドから解放する関数を将来ここへ配線すると、
+    // glue側の `close_peer()` による解放と二重になる(Runtimeのhandoff契約)。
+    // 番地は記録だけ残す(`register_buf` が同じfdへ再登録したかを追える)。
+    conn.moduleBuf = null;
     const wake = conn.wake;
     conn.wake = null;
     wake?.();

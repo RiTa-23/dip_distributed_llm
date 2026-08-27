@@ -6,6 +6,7 @@ import { networkInterfaces } from "node:os";
 import { Coordinator, type Socket } from "./coordinator";
 import { parseClientMessage } from "./parse";
 import { buildJoinUrls, normalizePublicOrigin } from "./lanAddress";
+import { bunModelLookup, handleModelRequest } from "./modelFile";
 import { pickTlsFiles, publicHostFromSan, publicOriginFrom } from "./tlsConfig";
 
 const app = new Hono();
@@ -78,17 +79,35 @@ function asPingable(raw: unknown): PingableSocket | null {
 // WASM版llama.cppがpthread(SharedArrayBuffer)を使うため cross-origin isolation が必須。
 // secure context(HTTPS)と合わせて初めて crossOriginIsolated === true になる。
 //
-// ここで `c.header()` を使ってはいけない(#53)。`c.header()` は Response を作り直し、
-// その過程で本文が ReadableStream に化けて `Content-Length` が失われる。全レスポンスが
-// チャンク転送になり、GGUFのダウンロードで
-//   - 分母が分からずフロントが進捗率を出せない
-//   - Range が効かず、途中で切れると最初からやり直しになる
-// という症状が出ていた。既存の Headers を直接書き換えれば本文はそのまま通る。
+// ここで `c.header()` を使ってはいけない(#53 / #B-1 で別々に実測)。hono の `c.header()` は
+// `finalized` なら無条件に `new Response(#res.body, #res)` で確定済みResponseを組み直す
+// (hono 4.13.3 / `dist/context.js` の `header`)。その過程で本文が ReadableStream に化け、
+//   - `Content-Length` が落ちて全レスポンスがチャンク転送になる(進捗の分母が出せない)
+//   - `BunFile.slice()` のbodyが範囲を失い、数バイトの Range 要求に全ファイルを返す
+// という症状になる。
+//
+// `c.res` の getter は `#res` をそのまま返す(組み直さない)ので、既存の Headers を
+// 直接書き換えれば本文も `Content-Length` もそのまま通る。**この形なら、ハンドラが
+// 返した生のResponse(モデル配信)にも Hono が作ったResponseにも等しく載る**。
+// 逆に `next()` の前で宣言する形は `#preparedHeaders` にしか入らず、生のResponse経路で
+// 無言で落ちる(実測済み)ので採らない。
 app.use("*", async (c, next) => {
   await next();
   c.res.headers.set("Cross-Origin-Opener-Policy", "same-origin");
   c.res.headers.set("Cross-Origin-Embedder-Policy", "require-corp");
 });
+
+/**
+ * 生のResponseを作る経路がその場で載せるぶん。上のミドルウェアと同じ値。
+ *
+ * 上の `c.res.headers.set()` 形式なら生のResponseにも載るので、これは保険。
+ * handler 単体で見ても正しいResponseになるようにしておき、middlewareの登録順に
+ * 依存させない。`set` なので二重にはならない。
+ */
+const ISOLATION_HEADERS = {
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Cross-Origin-Embedder-Policy": "require-corp",
+} as const;
 
 // --- 制御プレーン(#16-19) ---
 // /ws は静的配信・SPAフォールバックより前に登録する(index.html に飲まれないため)。
@@ -194,7 +213,9 @@ app.get("/status", (c) => c.json(coordinator.status()));
 // モデル(GGUF)・WASMグルーコードは ./public から配信。
 // 実データ(テンソル)は WebRTC P2P で流れるため Hono は中継しない(AGENTS.md 前提2)。
 // Range に対応していることを明示する。`serveStatic` は Range 要求に 206 を返せるが
-// `Accept-Ranges` は付けないため、クライアントが試す前に判断できない(#53)
+// `Accept-Ranges` は付けないため、クライアントが試す前に判断できない(#53)。
+// 下の専用handlerより**先に**登録する。こうしておくと、専用handlerが担当外にした
+// `/models/*`(serveStatic fallback や 404)にも載る。
 app.use("/models/*", async (c, next) => {
   await next();
   c.res.headers.set("Accept-Ranges", "bytes");
@@ -202,6 +223,22 @@ app.use("/models/*", async (c, next) => {
 app.use("/wasm/*", async (c, next) => {
   await next();
   c.res.headers.set("Accept-Ranges", "bytes");
+});
+// GGUFだけは serveStatic より前に自前で返す(#B-1)。決め手は **HEAD** で、
+// serveStatic は HEAD に `content-length: 0` を返すため Runtime adapter がモデルサイズを
+// 決められず、URL経路のモデル読み込みがそもそも成立しない。
+// (Range については Bun が BunFile backed Response に 206/416 を自動で返す。B-1 で見えた
+//  「Range が効かない」は上の `c.header()` によるResponse組み直しの二次症状だった。
+//  それでもここで自前に返すのは、HEAD の件と、Range/416 を Bun の暗黙の振る舞いに依存させず
+//  単体テストで固められる形にするため。)
+// ここが受け持つのは `/models/<name>` の1階層だけで、汎用の静的配信ではない。
+const modelLookup = bunModelLookup("./public/models");
+// middlewareではなくrouteとして登録する。`app.use` で返すと後段の serveStatic まで
+// 走ってしまい、こちらのヘッダのまま body だけ全body に差し替わる(実測)。
+app.on(["GET", "HEAD"], "/models/*", async (c, next) => {
+  const handled = await handleModelRequest(c.req.raw, modelLookup, ISOLATION_HEADERS);
+  if (!handled) return next(); // 担当外・見つからない → 下の 404 へ
+  return handled;
 });
 app.use("/models/*", serveStatic({ root: "./public" }));
 app.use("/wasm/*", serveStatic({ root: "./public" }));

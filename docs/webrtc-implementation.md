@@ -133,9 +133,16 @@ peer側`useHonoSocket`の`lastMessage`が`webrtc_signal`で`payload.kind`が`off
 
 ## LAN限定であることの影響
 
-- `iceServers: []`でよい(STUN/TURN不要)
-- ICEはhost candidate(ローカルIP直接)のみで同一LAN内疎通
-- 会場Wi-FiのAP isolation設定を事前確認(有効だと同一LAN内でも端末間通信不可、WebRTC接続不可)
+- 外部のSTUN/TURNサービスは使わない(AGENTS.md 前提6)
+- ~~`iceServers: []`でよい(STUN/TURN不要)~~ → **host candidateだけでは足りないLANが実在した。**
+  物理2PC・標準Chromeの実測で、SDPとhost candidateの交換まで通ったのに ICE が
+  `checking → disconnected`、DTLS が `new` のまま止まった。**言えるのはここまでで、原因は未確定**
+  (mDNSは類似の前例があるが、この件の原因としては確定していない)
+- そのため**会場LAN内のTURN**へfallbackできるようにした。`iceTransportPolicy` は既定 `all` で、
+  direct(host)とrelayの選択はICEに任せる。設定は `apps/web/.env.example` と
+  `apps/web/src/webrtc/iceConfig.ts`。**3項目とも未設定なら従来どおり `iceServers: []`**
+- 会場Wi-FiのAP isolation設定を事前確認(有効だと同一LAN内でも端末間通信不可)。
+  TURNがあれば中継で通せる見込みだが、**未実測**
 
 ## 世代変更時の接続管理
 
@@ -241,7 +248,7 @@ RTCPeerConnection.prototype.createAnswer = () => Promise.reject(new Error("意�
 | Hono側の `webrtc_signal` 素通し中継 | ② | 完了(#19) |
 | DataChannel ↔ llama.cpp RPC の橋渡し(`PeerManager`) | WebRTC担当 | 実装済み(下記) |
 | WASMのページへの読み込みと起動(`webrtc/wasmEngine.ts`) | WebRTC担当 | 実装済み(#71) |
-| WASMのビルド(`llmlet-mod.js` / `.wasm`) | ① | 未着手 |
+| WASMのビルド(`llmlet-mod.js` / `.wasm`)と Runtime adapter(`llmlet-runtime.js`) | ① | 完了。Web が読むのは adapter 側 |
 
 ### llmletのどこを差し替えるか
 
@@ -329,7 +336,7 @@ const rtc = useWebrtcSignaling({
 
 ### WASMの代役スタブで確認したこと(2026/8/25、#44)
 
-WASM本体はまだ来ていませんが、**C側と同じ呼び方をする代役**([`webrtc/rpcStub.ts`](../apps/web/src/webrtc/rpcStub.ts))を書いて、橋渡しの側だけ先に確定させてあります。真似ているのは手続き(`accept` → `recv`(ヘッダ) → `recv`(本体) → `send`(応答))であって中身の意味ではありません。C側と揃えてあるのは次の2点です。
+Runtime が来る前に、**C側と同じ呼び方をする代役**([`webrtc/rpcStub.ts`](../apps/web/src/webrtc/rpcStub.ts))を書いて、橋渡しの側だけ先に確定させてあります。真似ているのは手続き(`accept` → `recv`(ヘッダ) → `recv`(本体) → `send`(応答))であって中身の意味ではありません。C側と揃えてあるのは次の2点です。
 
 - `recv` は要求したぶんが一度に来るとは限らないので、集まるまで繰り返す(llama.cppの `recv_data` と同じ)
 - `send` の戻り値が短ければ残りを送り直す(同 `send_data`。送信キューが埋まったときにここが効く)
@@ -350,18 +357,25 @@ await __rpc.check({ sizeMiB: 8 })
 
 **送ったものを加工して返す**作りにしてあるので、中身を読まずに返すだけの相手では通りません。分割・順序・詰まったときの送り直しが噛み合っていることの確認になります。
 
-### まだ無いもの
+### Runtime は統合済み(B-1)
 
-WASM本体(`llmlet-mod.js` / `.wasm`)がまだ来ていません。**受け口の側は先に書いてあります**([`apps/web/src/webrtc/wasmEngine.ts`](../apps/web/src/webrtc/wasmEngine.ts)、#71)。やっているのは上の2つです。
+Web が読むのは **Runtime adapter の `/wasm/llmlet-runtime.js`**(名前付きexport `startPeer` /
+`startRequester`)です。Emscripten の `llmlet-mod.js` / `.wasm` は adapter が自分の隣から
+解決するので、Web 側が直接 import することはありません。
 
 ```ts
-// 1. register_buf で預かった番地の解放先を渡す(usePeerManager の引数に足す)
-const rpc = usePeerManager({ releaseBuf, onError })
-
-// 2. 起動処理の中でWASMへ載せる
+// 起動処理の中でWASMへ載せる
 Module.PeerManager = rpc.manager
 ```
 
-`/wasm/llmlet-mod.js` が404の今は、読み込みに失敗した時点でダミー経路(2.2秒待って準備完了)へ落ちます。ビルドが置かれれば、それだけで本物の経路に切り替わります。**ビルドが来たときに確認するのは起動関数の名前だけ**で、`wasmEngine.ts` の `ENTRY_NAMES`(既定は `startServer` / `startClient`)と違っていたらそこへ足します。
+**`release_conn` は使いません。** 受信バッファはそれを malloc した pthread 側に残るため、
+main thread から解放すると fd 再利用時に use-after-free になります。解放は adapter の
+`close_peer()` 側が持ちます(Runtime 側の handoff 契約)。`usePeerManager` の `releaseBuf` も
+渡しません。
+
+**読み込みや起動に失敗してもダミー経路へは落ちません**([`webrtc/wasmEngine.ts`](../apps/web/src/webrtc/wasmEngine.ts))。
+モデルもRPCも通っていないのに画面だけ準備完了になると、動いているかどうかの判定に
+ならないためです。real GGUF / real RPC / real Runtime による実推論は B-1 で実測済みで、
+**未証明なのは TURN の実機だけ**です。
 
 ビルド側の前提(llmletのMakefileより): emsdk 4.0.16以上、`-sMEMORY64=2`(wasm64)、emdawnwebgpu(Dawn)、`-sEXPORTED_RUNTIME_METHODS` に `release_conn` を含めること。パッチ済みllama.cppは `ktock/llama.cpp` のフォークです。

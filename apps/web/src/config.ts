@@ -1,12 +1,14 @@
 /** 両画面が使う定数。散らばらないようここ1か所に置く。 */
 
+import type { IceEnv } from "./webrtc/iceConfig";
+
 /** Honoの制御プレーン。ステップ3で useHonoSocket が使う */
 export const WS_PATH = "/ws";
 
 /** モデルの層数。本来は①のWASMから取れるはずの値で、今は仮置き */
 export const TOTAL_LAYERS = 32;
 
-export const MODEL_NAME = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
+export const MODEL_NAME = "qwen2.5-0.5b-instruct-q4_k_m.gguf";
 
 /** 表示名の初期値。参加者が書き換える */
 export const DEFAULT_DISPLAY_NAME = "参加者のPC";
@@ -16,7 +18,7 @@ export const DEFAULT_DISPLAY_NAME = "参加者のPC";
  *
  * 正常な再編成でも待ち時間はある。増えた側のエンジン起動が終わるまで
  * Honoは次の `generation_start` を出せないため、既存の参加者はそのあいだ
- * 再編成中で止まる(今のダミー起動で2.2秒、①のWASMが載ればもう少し伸びる)。
+ * 再編成中で止まる(実Runtimeの起動とモデル読み込みぶん)。
  * それを踏まえて余裕をとった値で、正常系でこの案内が出てはいけない。
  */
 export const REORGANIZING_STALL_MS = 12_000;
@@ -85,11 +87,39 @@ export const USE_MOCK_SOCKET: boolean = import.meta.env.VITE_MOCK_SOCKET === "1"
 export const FAKE_METRICS: boolean = import.meta.env.VITE_FAKE_METRICS === "1";
 
 /**
- * ①のWASM(llmletのビルド)を読み込む先。Honoは `./public/wasm` をここへ配信する
- * (`apps/server/src/index.ts`)。**まだビルドが置かれていないので今は404**で、
- * そのときは起動処理がダミー経路へ落ちる(`webrtc/wasmEngine.ts`)。
+ * ①のRuntime adapterを読み込む先。Honoは `./public/wasm` をここへ配信する
+ * (`apps/server/src/index.ts`)。
+ *
+ * 指すのは **`llmlet-runtime.js`**(名前付きexport `startPeer` / `startRequester`)で、
+ * `llmlet-mod.js` ではない。あちらはEmscriptenのfactoryで、起動関数は生えていない。
+ * `llmlet-runtime.js` が自分の隣から `llmlet-mod.js` / `.wasm` を解決する。
+ *
+ * **読めなければダミーへは落ちない**(`webrtc/wasmEngine.ts`)。モデルもRPCも
+ * 通っていないのに画面だけ準備完了になるのを避けるため。
  *
  * 読み込むのは静的配信されたグルーコードだけで、RPCの実データはHonoを通さず
  * DataChannelを流れる(AGENTS.md 前提2)。
  */
-export const WASM_MODULE_URL = "/wasm/llmlet-mod.js";
+export const WASM_MODULE_URL = "/wasm/llmlet-runtime.js";
+
+/**
+ * TURNの生env。**ここは集めるだけ**で、解釈は `webrtc/iceConfig.ts` が行う。
+ *
+ * 会場LAN内のcoturnを指す想定(AGENTS.md 前提6: 外部のクラウドサービスは使わない)。
+ * 3つとも空なら従来どおりTURN無効で、参加者側の操作は何も増えない。
+ * 設定例は `apps/web/.env.example`。**実際のcredentialはコミットしない。**
+ *
+ *   VITE_TURN_URLS=turn:192.168.1.146:3478?transport=udp,turn:192.168.1.146:3478?transport=tcp
+ *   VITE_TURN_USERNAME=dip
+ *   VITE_TURN_CREDENTIAL=... (ローカルのみ)
+ *   VITE_FORCE_RELAY=0
+ *
+ * `VITE_FORCE_RELAY=1` は**検証専用**。relayを強制して中継経路だけを試すためのもので、
+ * 本番では必ず `all`(ICEにhost/relayを選ばせる)。
+ */
+export const TURN_ENV: IceEnv = {
+  urls: import.meta.env.VITE_TURN_URLS,
+  username: import.meta.env.VITE_TURN_USERNAME,
+  credential: import.meta.env.VITE_TURN_CREDENTIAL,
+  forceRelay: import.meta.env.VITE_FORCE_RELAY,
+};

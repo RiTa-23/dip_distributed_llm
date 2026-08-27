@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 /**
- * devサーバから `/join-info` と `/ws` をHonoへ中継する先。
+ * devサーバから `/join-info` / `/ws` / `/models` / `/wasm` をHonoへ中継する先。
  * 本番はHonoがフロントごと配るので同一オリジンで済み、この設定は使わない。
  * 未指定ならプロキシを張らず、QRは今開いているオリジンのURLになる。
  *   例: VITE_HONO_ORIGIN=http://localhost:3000 bun run dev
@@ -19,13 +19,15 @@ export default defineConfig({
     // secure:false は mkcert の証明書をNode側が検証できないケースへの対応(dev限定)。
     // `/ws` も同じ入口に寄せる(ws:true)。こうしておくと VITE_HONO_WS_URL を使い分けずに済み、
     // dev でも本番と同じ「同一オリジンへ繋ぐ」経路をそのまま試せる。
-    // `/models` はモデル本体(GGUF)の配信先(#80)。VITE_HONO_ORIGIN を指定しないと
-    // dev では届かず、RequesterView の実測ダウンロードが動かない。
+    // `/models` はreal GGUF、`/wasm` はRuntime adapter/Emscripten成果物の配信先。
+    // B-1以降はどちらも実推論に必要なので、VITE_HONO_ORIGIN を指定したdev経路でも
+    // Honoへ中継しないと「制御は繋がるがRuntimeだけ404」という偽の部分成功になる。
     proxy: honoOrigin
       ? {
           "/join-info": { target: honoOrigin, changeOrigin: true, secure: false },
           "/ws": { target: honoOrigin, changeOrigin: true, secure: false, ws: true },
           "/models": { target: honoOrigin, changeOrigin: true, secure: false },
+          "/wasm": { target: honoOrigin, changeOrigin: true, secure: false },
         }
       : undefined,
     // WASM版llama.cppがpthreadを使うためSharedArrayBufferが要る。

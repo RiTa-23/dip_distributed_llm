@@ -6,9 +6,9 @@
 
 - **requester**(推論リクエスト元・1人固定): WASM版llama.cpp(rpc-client役)を実行し、各peerとWebRTC DataChannelで直接通信してトークン生成をブラウザ内で完結させる
 - **peer**(計算リソース提供・複数・動的増減): WASM版llama.cpp(rpc-server役)を実行し、requesterから受け取った層の計算を担当する
-- **Hono**(コーディネータ): 静的配信(React成果物・GGUF・WASM)、`/ws`での制御メッセージ・WebRTCシグナリング取り次ぎ、ロスター管理のみを行う。実データ(モデル重み・テンソル)はHonoを経由せず、requester⇔peer間のWebRTC DataChannelでP2P通信する
+- **Hono**(コーディネータ): 静的配信(React成果物・GGUF・WASM)、`/ws`での制御メッセージ・WebRTCシグナリング取り次ぎ、ロスター管理を行う。Honoが運ぶのは `/ws` の制御メッセージと `/models/*` の **GGUF**(HTTP の HEAD / Range)の2つで、**Runtime間のRPCデータ(peerの担当層の重み・テンソル)はHonoを経由せず**、requester⇔peer間のWebRTC DataChannelを流れる。経路はdirectを優先し、成立しないときは会場LAN内のTURNによるrelayを許可する(**TURN経由でもHonoはRPCを中継しない**)。GGUFもRPCも会場LANの外へは出さない
 
-星型トポロジー(requesterが全peerに個別接続、peer間の直接通信はなし)、会場LAN内完結(クラウドサービス不使用)、推論リクエストは同時1人固定が設計上の前提。詳細は [docs/requirements.md](./docs/requirements.md) を参照。
+星型トポロジー(requesterが全peerに個別接続、peer間の直接通信はなし)、推論リクエストは同時1人固定が設計上の前提。推論・モデル配布は会場LAN内で完結する。本番デモの実在ドメイン方式では、名前解決と発表者PCからの証明書/DNS準備だけ外部サービスを使う。詳細は [docs/requirements.md](./docs/requirements.md) を参照。
 
 ## リポジトリ構成
 
@@ -20,7 +20,7 @@ native/                   WASM版llama.cpp・RPCパッチ(別ビルドパイプ�
 docs/                     設計ドキュメント
 ```
 
-`native/` はまだリポジトリに存在しない(①の担当分。WASMビルドが出てから追加される)。
+`native/` はまだリポジトリに存在しない。Runtime成果物は別ビルドで用意し、`apps/server/public/wasm/` に配置する。
 詳しくは [docs/directory-structure.md](./docs/directory-structure.md) を参照。
 
 ## 環境構築
@@ -74,8 +74,10 @@ workspaceを指定するので、`cd` して回る必要はない。
 bun run --cwd apps/server setup
 ```
 
-証明書・ダミーモデル・フロント成果物をまとめて用意する。**これをやらないと
-HTTPSにならず、モデルの配信先も空になる。**
+`setup` が用意するのは**開発用証明書とフロント成果物**。real GGUF と Runtime の
+JS/WASM は生成も変更もしないので、別途 `apps/server/public/models/` と
+`apps/server/public/wasm/` に配置する。モデルの正しいファイル名・サイズ・SHA-256は
+[apps/server/README.md](./apps/server/README.md) を参照。
 
 ### 起動
 
@@ -108,8 +110,8 @@ VITE_HONO_ORIGIN=https://localhost:8443 bun run --cwd apps/web dev
 $env:VITE_HONO_ORIGIN="https://localhost:8443"; bun run --cwd apps/web dev
 ```
 
-`VITE_HONO_ORIGIN` を渡すと、Viteが `/ws`・`/join-info`・`/models` をHonoへ中継する。
-渡さないとこれらが届かず、画面が動かない。
+`VITE_HONO_ORIGIN` を渡すと、Viteが `/ws`・`/join-info`・`/models`・`/wasm` をHonoへ中継する。
+渡さないと実制御プレーン・モデル・Runtime成果物が届かず、real Runtime経路は動かない。
 
 `native/`配下(llama.cppのWASMビルド)はEmscriptenという別ツールチェーンを使うため、Bun/npmのコマンドでは操作しない。ビルド方法は [docs/tech-selection-rationale.md](./docs/tech-selection-rationale.md) を参照。
 
@@ -138,9 +140,9 @@ bun run typecheck
 
 | コマンド | 内容 |
 |---|---|
-| `bun run setup` | 下の3つをまとめて実行(初回はこれ) |
+| `bun run setup` | `cert` + `web:copy` を実行。real GGUF / Runtime成果物は触らない |
 | `bun run cert` | mkcertで開発用証明書を生成(`certs/{cert,key}.pem`) |
-| `bun run dummy-model` | ダミーのGGUFを配置(①のWASMが来るまでの仮) |
+| `bun run dummy-model` | `/models/*` のHEAD/Range経路確認用 `dummy-route-test.gguf` を生成。実推論には使わない |
 | `bun run web:copy` | `apps/web` をビルドして `public/web-dist/` へコピー |
 | `bun run dns` | 本番デモ用。CloudflareのAレコードを今のLAN IPへ更新([#23](./docs/cert-setup-steps.md)) |
 

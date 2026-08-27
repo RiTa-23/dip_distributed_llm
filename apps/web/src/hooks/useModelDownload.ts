@@ -18,8 +18,15 @@ export type ModelDownload = {
  * StrictModeの二重実行で2回ダウンロードしないため。
  *
  * 取得に失敗しても `status: "failed"` を返すだけで例外は投げない。
- * モデル本体はまだ推論に使われていない(①のWASMへ渡すのは #71 の範囲)ので、
- * GGUFが置いてあるかどうかだけでデモが死ぬのを避ける(本人判断、2026/8/27)。
+ *
+ * ⚠️ **いまは `RequesterView` へ繋いでいない。** B-1 で Runtime adapter が同じ
+ * `/models/<MODEL_NAME>` を自分で取りに行くようになったので、ここも繋ぐと
+ * **491MB を二重にダウンロードする**(`modelFile.ts` は Cache-Control も ETag も
+ * 付けないため、2回目がキャッシュに当たる保証もない)。
+ *
+ * このモジュールを画面へ戻すなら、Runtime 側がモデル取得の進捗を報せられるように
+ * なってからにすること。`readWithProgress()` 自体は Runtime へ progress を足すときに
+ * そのまま流用できる。
  */
 export function useModelDownload(): ModelDownload {
   const [received, setReceived] = useState(0);
