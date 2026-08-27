@@ -25,7 +25,8 @@
 cd apps/server
 
 # トークンは対話で入れる(コマンドラインに書くとシェル履歴に残る)
-read -rs -p "CF_API_TOKEN: " CF_API_TOKEN && echo
+# read -p は bash 専用。zsh(macOSの既定)では動かないので printf で促す
+printf 'CF_API_TOKEN: '; read -rs CF_API_TOKEN; echo
 export CF_API_TOKEN
 
 export CF_ZONE_ID=...          # ゾーン概要ページの値
