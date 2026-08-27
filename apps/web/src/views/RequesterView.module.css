@@ -156,6 +156,19 @@
   color: var(--c-active);
 }
 
+.errorDetail {
+  margin: 12px 20px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--c-text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .toast {
   align-self: center;
   margin-top: 14px;

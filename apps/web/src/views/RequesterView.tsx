@@ -280,6 +280,9 @@ export function RequesterView() {
             </div>
           )}
           {notice && <div className={styles.notice}>{notice}</div>}
+          {phase === "error" && state.errorMessage && (
+            <p className={styles.errorDetail}>{state.errorMessage}</p>
+          )}
           <div className={styles.log}>
             {chat.map((m, i) => (
               <div key={i} className={m.role === "user" ? styles.user : styles.assistant}>
