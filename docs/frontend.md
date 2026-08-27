@@ -388,7 +388,7 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 | ~~`RequesterView` の配布率~~ | — | 本物になりました(2026/8/25)。開いたDataChannelの数 ÷ 繋ぐべき人数です |
 | `PeerView` のエンジン起動 | ①のビルドが無いあいだだけ2.2秒待つ([`webrtc/wasmEngine.ts`](../apps/web/src/webrtc/wasmEngine.ts)) | 同じファイル。`llmlet-mod.js` が置かれれば自動でそちらを通る(#71) |
 | ~~`PeerView` の処理回数・受信量~~ | — | 実測になりました(#47)。数えているのは [`webrtc/peerStats.ts`](../apps/web/src/webrtc/peerStats.ts)。①のWASMが載るまでは動かないので画面には `—` が出ます。乱数へ戻すときは `VITE_FAKE_METRICS=1` |
-| `RequesterView` のモデルDL | 一定速度のタイマー | `fetch` + `ReadableStream` の実測 |
+| `RequesterView` のモデルDL | — | `fetch` + `ReadableStream` で受信量を実測(#80)。`Content-Length` が取れない場合は一定速度のフォールバックを使う |
 | `RequesterView` の生成 | 固定文を1文字ずつ | ①の `onToken()` |
 | `RequesterView` の「計算中」の移動 | 12文字ごとに次のピアへ | ①の `onPeerTurn()` |
 

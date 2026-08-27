@@ -98,15 +98,59 @@ export function RequesterView() {
   const modelReady = modelProgress >= 1;
   const canSubmit = phase === "active" && modelReady && !generating;
 
-  // トラックA: モデルのダウンロード。フェーズとは独立に、開いた瞬間から進む
+  // トラックA: モデルのダウンロード。フェーズとは独立に、開いた瞬間から進む。
   useEffect(() => {
-    let v = 0;
-    const id = window.setInterval(() => {
-      v = Math.min(1, v + 0.02);
-      setModelProgress(v);
-      if (v >= 1) clearInterval(id);
-    }, 80);
-    return () => clearInterval(id);
+    let disposed = false;
+    let fallbackTimer: number | null = null;
+    const controller = new AbortController();
+
+    const startFallback = () => {
+      let value = 0;
+      fallbackTimer = window.setInterval(() => {
+        value = Math.min(1, value + 0.02);
+        setModelProgress(value);
+        if (value >= 1 && fallbackTimer !== null) {
+          clearInterval(fallbackTimer);
+          fallbackTimer = null;
+        }
+      }, 80);
+    };
+
+    const download = async () => {
+      try {
+        const response = await fetch(`/models/${MODEL_NAME}`, { signal: controller.signal });
+        if (!response.ok || !response.body) throw new Error(`model download failed: ${response.status}`);
+
+        const total = Number(response.headers.get("content-length"));
+        if (!Number.isFinite(total) || total <= 0) {
+          startFallback();
+          return;
+        }
+
+        const reader = response.body.getReader();
+        let received = 0;
+        try {
+          while (!disposed) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            received += value.byteLength;
+            setModelProgress(Math.min(1, received / total));
+          }
+          if (!disposed) setModelProgress(1);
+        } finally {
+          reader.releaseLock();
+        }
+      } catch {
+        if (!disposed) startFallback();
+      }
+    };
+
+    void download();
+    return () => {
+      disposed = true;
+      controller.abort();
+      if (fallbackTimer !== null) clearInterval(fallbackTimer);
+    };
   }, []);
 
   // トラックB: 編成。接続できたら名乗り、すぐ準備完了とする(発表者に起動待ちはない)
