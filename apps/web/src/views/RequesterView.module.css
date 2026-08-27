@@ -176,7 +176,7 @@
   border: 1px solid var(--c-active);
   border-radius: 999px;
   color: var(--c-active);
-  background: var(--c-surface-1);
+  background: var(--c-surface-2);
   font-size: 13px;
   animation: toast-in 180ms ease-out;
 }
@@ -192,8 +192,37 @@
   }
 }
 
+/*
+ * トーストのトーン(#68)。「人が増えた」は嬉しい出来事なので現れる瞬間に弾ませ、
+ * 「誰か落ちた・繋がらなかった」は残念な出来事なので線色を落として静める
+ * (activeは「稼働中」を表す色なので、祝い事以外の装飾には使わない)
+ */
+.toastJoyful {
+  animation:
+    toast-in 180ms ease-out,
+    toast-joyful-pop 420ms ease-out;
+}
+
+.toastCalm {
+  border-color: var(--c-line);
+  color: var(--c-text-dim);
+}
+
+@keyframes toast-joyful-pop {
+  0% {
+    transform: scale(0.9);
+  }
+  60% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .toast {
+  .toast,
+  .toastJoyful {
     animation: none;
   }
 }
