@@ -81,6 +81,28 @@ describe("clusterReducer の再編成", () => {
   });
 });
 
+describe("clusterReducer の generationPeerIds(#81)", () => {
+  test("generation_start でpeerIdsが保存される", () => {
+    expect(running.generationPeerIds).toEqual(["c-1", "c-2"]);
+  });
+
+  test("次の世代のpeerIdsに置き換わる", () => {
+    const s = clusterReducer(running, {
+      type: "server",
+      msg: { type: "generation_start", generation: 2, peerIds: ["c-1", "c-3"] },
+    });
+    expect(s.generationPeerIds).toEqual(["c-1", "c-3"]);
+  });
+
+  test("socket_closed で空に戻る", () => {
+    expect(clusterReducer(running, { type: "socket_closed" }).generationPeerIds).toEqual([]);
+  });
+
+  test("reset で空に戻る", () => {
+    expect(clusterReducer(running, { type: "reset" }).generationPeerIds).toEqual([]);
+  });
+});
+
 describe("clusterReducer のエラー", () => {
   test("失敗の内容をそのまま持つ", () => {
     const s = clusterReducer(running, { type: "failed", message: "DataChannelが開けません" });
