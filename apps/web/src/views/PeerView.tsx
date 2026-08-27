@@ -128,7 +128,12 @@ export function PeerView() {
   // `Module.PeerManager = rpc.manager` が差し込まれる(`useWasmEngine`)
   const rpc = usePeerManager({
     releaseBuf,
-    onError: (message) => dispatch({ type: "failed", message }),
+    // Honoは status: "error" のpeerを編成から外すので、1台の不調で全体が
+    // 止まらなくなった(#57)。以前は画面だけerrorにして送っていなかった(#79)
+    onError: (message) => {
+      dispatch({ type: "failed", message });
+      send({ type: "peer_status", status: "error", errorMessage: message });
+    },
   });
 
   // 稼働中の計測。数えているのは PeerManager 側で、ここは250msごとに読むだけ
@@ -143,7 +148,10 @@ export function PeerView() {
     lastMessage,
     send,
     ...rpc.handlers,
-    onFailed: (message) => dispatch({ type: "failed", message }),
+    onFailed: (message) => {
+      dispatch({ type: "failed", message });
+      send({ type: "peer_status", status: "error", errorMessage: message });
+    },
   });
   const progress = CONNECT_PROGRESS[rtc.status];
 
