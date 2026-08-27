@@ -14,10 +14,12 @@
   },
   "dependencies": {
     "@dip_distributed_llm/shared-types": "workspace:*",
+    "qrcode.react": "^4.2.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@types/bun": "latest",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

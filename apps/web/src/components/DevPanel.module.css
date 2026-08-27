@@ -1,0 +1,33 @@
+.panel {
+  border-top: 1px solid var(--c-line-soft);
+  padding: 10px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  background: var(--c-surface);
+}
+
+.label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--c-text-dim);
+}
+
+.panel button {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-color: var(--c-line-soft);
+}
+
+.on {
+  border-color: var(--c-active) !important;
+  color: var(--c-active);
+}
+
+.sep {
+  width: 1px;
+  height: 18px;
+  background: var(--c-line-soft);
+}

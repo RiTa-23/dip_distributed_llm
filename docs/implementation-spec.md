@@ -335,6 +335,9 @@ export function useHonoSocket(_url: string) {
 
 ## 6. ①(コア分散基盤)待ちのインターフェース
 
-- `startWasmClient(dataChannels: Record<string, RTCDataChannel>): Promise<void>` — requester側、モデルロード開始
+**2026/8/25更新。** DataChannelとRPCの橋渡しはWebRTC担当が持つことになり、下に挙げていた `startWasmClient` / `startWasmPeerServer` は不要になりました。llmletのRPCパッチはJS側の `Module.PeerManager` しか呼ばないため、そこを埋める `apps/web/src/webrtc/peerManager.ts` が実装済みです(契約は `webrtc-implementation.md` の「データプレーン」節)。
+
+①待ちなのはWASMのビルドそのものです。
+
+- `llmlet-mod.js` / `llmlet-mod.wasm` — パッチ済みllama.cppのEmscriptenビルド。`-sEXPORTED_RUNTIME_METHODS` に `release_conn` を含めること
 - `onToken(callback: (token: string, done: boolean) => void)` — requester側、生成トークンのコールバック登録
-- `startWasmPeerServer(onDataChannel: (channel: RTCDataChannel) => void): Promise<void>` — peer側、rpc-server起動とDataChannel橋渡し

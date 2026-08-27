@@ -8,6 +8,7 @@
 | [api-contract.md](./api-contract.md) | WebSocketメッセージ契約 |
 | [webrtc-implementation.md](./webrtc-implementation.md) | WebRTC実装ガイド |
 | [implementation-spec.md](./implementation-spec.md) | Hono/React実装仕様書 |
+| [frontend.md](./frontend.md) | フロントエンドの現状・画面の状態・書き方の決まり |
 | [tech-selection-rationale.md](./tech-selection-rationale.md) | 技術選定の理由 |
 | [comparison-with-llmlet.md](./comparison-with-llmlet.md) | llmletとの差分・比較 |
 

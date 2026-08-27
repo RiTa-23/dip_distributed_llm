@@ -18,6 +18,7 @@
 | WebSocketメッセージの形式 | `docs/api-contract.md` |
 | WebRTC接続確立の実装方法 | `docs/webrtc-implementation.md` |
 | Hono/Reactのコード例・進め方 | `docs/implementation-spec.md` |
+| フロントの現状・画面の状態・書き方の決まり | `docs/frontend.md` |
 | なぜこの技術を選んだか | `docs/tech-selection-rationale.md` |
 
 ## リポジトリ構成

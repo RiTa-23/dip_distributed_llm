@@ -1,0 +1,117 @@
+.page {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 28px;
+  padding: 32px 20px 40px;
+  max-width: 560px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.join {
+  background: var(--c-active);
+  border-color: var(--c-active);
+  color: var(--c-bg);
+  font-weight: 500;
+}
+
+.join:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--c-active) 85%, var(--c-text));
+}
+
+.env {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 12px;
+  color: var(--c-text-dim);
+}
+
+/* 満たしていない項目。--c-active は稼働中を表す色なので使わない */
+.envBad {
+  color: var(--c-text);
+  text-decoration: underline;
+  text-decoration-color: var(--c-line);
+  text-underline-offset: 3px;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.notice {
+  border: 1px solid var(--c-active);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--c-active);
+  text-align: center;
+}
+
+/*
+ * 失敗の原因そのもの。人向けの案内ではなく機械が吐いた文字列が入るので、
+ * .notice(活性色で目を引かせる箱)とは分け、読み取り用の見た目にする。
+ * 長い英語が改行なしで来るため折り返しを許す
+ */
+.errorDetail {
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--c-text-dim);
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * 再編成が長引いたときの案内(#63)。.notice(活性色。すぐ戻る前提の一言)と
+ * 同じ見た目にすると「待っていれば直る」に見えるので、線の色を落として
+ * 手を打つ箱にする。中身は案内と、繋ぎ直しのボタン
+ */
+.stall {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius);
+  padding: 14px;
+  text-align: center;
+}
+
+.stallTitle {
+  font-size: 14px;
+  color: var(--c-text);
+}
+
+.stallHint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--c-text-dim);
+}
+
+@media (max-width: 600px) {
+  .body {
+    gap: 22px;
+    padding: 24px 16px 32px;
+    justify-content: flex-start;
+    padding-top: 40px;
+  }
+}

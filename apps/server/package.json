@@ -2,6 +2,10 @@
   "name": "@dip_distributed_llm/server",
   "scripts": {
     "dev": "bun run --hot src/index.ts",
+    "cert": "bun scripts/gen-cert.ts",
+    "dummy-model": "bun scripts/gen-dummy-model.ts",
+    "web:copy": "bun run --cwd ../web build && bun scripts/copy-web-dist.ts",
+    "setup": "bun run cert && bun run dummy-model && bun run web:copy",
     "lint": "oxlint",
     "format": "oxfmt --check src",
     "test": "bun test --pass-with-no-tests",

@@ -1,0 +1,10 @@
+# 改行コードはリポジトリ内・チェックアウト後ともLFに統一する(#51)。
+#
+# Windows向けGitインストーラの既定は core.autocrlf=true で、この設定のままだと
+# チェックアウト時に全テキストファイルがCRLFに変換される。oxfmtはLFを期待するため、
+# ソースを1文字も編集していないのに `bun run format` が全ファイルでfailする。
+# CIはLinuxで走るのでgreenのままになり、Windowsのローカル開発者だけが踏む。
+#
+# text=auto … Gitがテキストと判定したファイルだけを対象にする(バイナリは除外)
+# eol=lf    … チェックアウト時にLFで書き出す(core.autocrlfの設定より優先される)
+* text=auto eol=lf

@@ -1,0 +1,7 @@
+# CodeRabbit設定
+# https://docs.coderabbit.ai/reference/configuration
+
+language: ja-JP
+
+reviews:
+  poem: true
