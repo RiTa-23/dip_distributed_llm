@@ -150,17 +150,18 @@ export function RequesterView() {
   }, [state.roster.length]);
 
   useEffect(() => {
-    if (!lastMessage) return;
-    const message =
-      lastMessage.type === "generation_start"
-        ? "編成が完了しました"
-        : lastMessage.type === "generation_aborted"
-          ? lastMessage.message
-          : null;
+    const message = state.abortMessage;
     if (!message) return;
 
     if (toastTimer.current) clearTimeout(toastTimer.current);
     setToast(message);
+    toastTimer.current = window.setTimeout(() => setToast(null), 3200);
+  }, [state.abortMessage]);
+
+  useEffect(() => {
+    if (!lastMessage || lastMessage.type !== "generation_start") return;
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast("編成が完了しました");
     toastTimer.current = window.setTimeout(() => setToast(null), 3200);
   }, [lastMessage]);
 

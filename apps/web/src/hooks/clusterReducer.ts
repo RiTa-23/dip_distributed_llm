@@ -33,6 +33,7 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
         generation: 0,
         abortReason: null,
         generationPeerIds: [],
+        abortMessage: null,
       };
 
     case "local_ready":
@@ -54,6 +55,7 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
         errorMessage: null,
         abortReason: null,
         generationPeerIds: [],
+        abortMessage: null,
       };
 
     case "dev_set_phase":
@@ -66,20 +68,28 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
           return { ...s, roster: a.msg.peers };
 
         case "generation_start":
+<<<<<<< HEAD
           // 編成し直しが済んだ。きっかけはもう表示しない
+=======
+>>>>>>> be9efdf (fix: 発表者画面で再編成理由を保持する(#61))
           return {
             ...s,
             generation: a.msg.generation,
             phase: "connecting",
             abortReason: null,
             generationPeerIds: a.msg.peerIds,
+            abortMessage: null,
           };
 
         case "generation_aborted":
           // 古い世代の通知が遅れて届くことがある。捨てないと正常な編成が巻き込まれる
           if (a.msg.generation < s.generation) return s;
-          // reason は画面の文言の出し分けにだけ使う。判断はしない
-          return { ...s, phase: "reorganizing", abortReason: a.msg.reason };
+          return {
+            ...s,
+            phase: "reorganizing",
+            abortReason: a.msg.reason,
+            abortMessage: a.msg.message,
+          };
 
         case "webrtc_signal":
           // 接続手続きのメッセージ。フェーズには関係しない

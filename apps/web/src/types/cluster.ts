@@ -63,6 +63,7 @@ export type ClusterState = {
    * これで絞り込んだpeerに対してのみ行う(#81)
    */
   generationPeerIds: string[];
+  abortMessage: string | null;
 };
 
 export const initialClusterState: ClusterState = {
@@ -72,4 +73,5 @@ export const initialClusterState: ClusterState = {
   errorMessage: null,
   abortReason: null,
   generationPeerIds: [],
+  abortMessage: null,
 };
