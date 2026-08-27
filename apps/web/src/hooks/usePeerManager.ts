@@ -18,7 +18,11 @@ export type PeerManagerOptions = {
   releaseBuf?: (ptr: number) => void;
   /** 異常の通知。画面に出す用で、制御には使わない */
   onError?: (message: string) => void;
+  /** WASMの生成結果を画面へ渡す。tokenは1回につき1トークン以上を受け取る */
+  onGenerationEvent?: (event: GenerationEvent) => void;
 };
+
+export type GenerationEvent = { type: "token"; token: string } | { type: "generation_end" };
 
 /** useWebrtcSignaling へそのまま広げて渡せる形 */
 export type PeerManagerHandlers = {
@@ -34,6 +38,8 @@ export type PeerManagerBridge = {
   handlers: PeerManagerHandlers;
   /** 描画のたびに最新のコールバックを預け直す。フックの中からだけ呼ぶ */
   setOptions: (options: PeerManagerOptions) => void;
+  /** WASM側の生成実装がtokenと完了通知を画面へ渡す入口 */
+  emitGenerationEvent: (event: GenerationEvent) => void;
 };
 
 /**
@@ -65,7 +71,9 @@ function createBridge(): PeerManagerBridge {
     setOptions: (options) => {
       latest.releaseBuf = options.releaseBuf;
       latest.onError = options.onError;
+      latest.onGenerationEvent = options.onGenerationEvent;
     },
+    emitGenerationEvent: (event) => latest.onGenerationEvent?.(event),
     handlers: {
       onOpen: (remoteId, channel) => {
         manager.attach(remoteId, channel);

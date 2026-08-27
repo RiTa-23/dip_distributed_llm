@@ -12,6 +12,16 @@ export const MODEL_NAME = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
 export const DEFAULT_DISPLAY_NAME = "参加者のPC";
 
 /**
+ * 再編成中がこれだけ続いたら、画面に案内と繋ぎ直しの導線を出す(#63)。
+ *
+ * 正常な再編成でも待ち時間はある。増えた側のエンジン起動が終わるまで
+ * Honoは次の `generation_start` を出せないため、既存の参加者はそのあいだ
+ * 再編成中で止まる(今のダミー起動で2.2秒、①のWASMが載ればもう少し伸びる)。
+ * それを踏まえて余裕をとった値で、正常系でこの案内が出てはいけない。
+ */
+export const REORGANIZING_STALL_MS = 12_000;
+
+/**
  * `/ws` の接続先の上書き。既定(空文字)では画面を配信しているオリジンへ繋ぐ。
  * viteのdevサーバ(5173)とHono(8443)を別々に動かすときだけ使う。
  *   例: VITE_HONO_WS_URL=wss://localhost:8443/ws bun run dev
@@ -58,3 +68,13 @@ export const USE_MOCK_SOCKET: boolean = import.meta.env.VITE_MOCK_SOCKET === "1"
  * `PeerView` 側は1行も変わらない。
  */
 export const FAKE_METRICS: boolean = import.meta.env.VITE_FAKE_METRICS === "1";
+
+/**
+ * ①のWASM(llmletのビルド)を読み込む先。Honoは `./public/wasm` をここへ配信する
+ * (`apps/server/src/index.ts`)。**まだビルドが置かれていないので今は404**で、
+ * そのときは起動処理がダミー経路へ落ちる(`webrtc/wasmEngine.ts`)。
+ *
+ * 読み込むのは静的配信されたグルーコードだけで、RPCの実データはHonoを通さず
+ * DataChannelを流れる(AGENTS.md 前提2)。
+ */
+export const WASM_MODULE_URL = "/wasm/llmlet-mod.js";
