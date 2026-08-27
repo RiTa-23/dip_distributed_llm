@@ -223,9 +223,21 @@ export function RequesterView() {
   const computingClientId =
     computingIndex === null ? null : (assignments[computingIndex]?.clientId ?? null);
   const notice = phase === "connecting" && connectStalled ? CONNECT_STALL_NOTICE : NOTICE[phase];
+  // NOTICEは`active`を持たない(伝えることが無いので箱ごと消す)。読み上げ用は
+  // 箱の有無に関わらず7フェーズすべてを伝えたいので、その1件だけ別に補う(#66)
+  const phaseAnnouncement = phase === "active" ? "接続済みです。プロンプトを送れます" : (notice ?? "");
 
   return (
     <div className={styles.page}>
+      {/*
+        画面の状態(NOTICEと同じ文言)を読み上げるためだけの領域。`.notice` は
+        `active` のとき箱ごと消えるため、見た目とは別に常時マウントしたここへ集約する。
+        テキストが実際に変わったときしかDOMが動かないので、連呼にはならない(#66)
+      */}
+      <div className={styles.srOnly} aria-live="polite" aria-atomic="true">
+        {phaseAnnouncement}
+      </div>
+
       <TopBar
         left={
           <>

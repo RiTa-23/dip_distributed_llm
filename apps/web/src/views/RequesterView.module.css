@@ -202,6 +202,19 @@
   font-family: var(--mono);
 }
 
+/* 視覚的には出さず、支援技術にだけ読ませる領域(#66) */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 @media (max-width: 860px) {
   .body {
     grid-template-columns: minmax(0, 1fr);

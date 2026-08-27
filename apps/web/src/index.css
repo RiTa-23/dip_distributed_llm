@@ -84,6 +84,22 @@ input {
 }
 
 input:focus {
-  outline: none;
   border-color: var(--c-active);
+}
+
+/*
+ * キーボード操作のときだけ枠を出す(#66)。マウスクリックでの focus では
+ * :focus-visible にマッチしないため、クリック時に枠が付く煩わしさは出ない。
+ */
+button:focus:not(:focus-visible),
+input:focus:not(:focus-visible),
+select:focus:not(:focus-visible) {
+  outline: none;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--c-active);
+  outline-offset: 2px;
 }
