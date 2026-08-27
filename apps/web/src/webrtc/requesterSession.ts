@@ -141,7 +141,10 @@ export function createRequesterSession({
     pc.onconnectionstatechange = () => {
       if (disposed) return;
       if (pc.connectionState === "failed") {
-        fatalFail(peerId, `${peerId} との直接接続に失敗しました`);
+        // TURNを設定していればrelayもICE候補になり得るので、direct限定の文言にしない。
+        // (「directもrelayも全部試した」とは限らない — TURNへ到達できず relay candidate
+        //  そのものを取れなかった場合も、最終的にはここへ来る)
+        fatalFail(peerId, `${peerId} との接続に失敗しました`);
       }
       callbacks.onChange();
     };

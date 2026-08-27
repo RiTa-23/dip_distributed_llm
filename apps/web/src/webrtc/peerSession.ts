@@ -90,7 +90,7 @@ export function createPeerSession({
     conn.onconnectionstatechange = () => {
       if (disposed) return;
       if (conn.connectionState === "failed") {
-        fail("発表者との直接接続に失敗しました");
+        fail("発表者との接続に失敗しました");
       }
       callbacks.onChange();
     };

@@ -21,7 +21,7 @@ import type { AbortReason, Phase } from "../types/cluster";
 import styles from "./PeerView.module.css";
 
 /**
- * 直接接続の進み具合。実測できるのは「相手が決まった」「開いた」の2段だけなので、
+ * 接続の進み具合。実測できるのは「相手が決まった」「開いた」の2段だけなので、
  * 途中の値を作らずこの3つに丸める。受信したバイト数自体は数えているが
  * (`webrtc/peerStats.ts`)、総量が分からないので進捗率にはできない。
  */
@@ -101,7 +101,7 @@ function describeError(error: unknown): string {
 }
 
 /**
- * 参加者(peer)画面。参加 → エンジン起動 → 発表者との直接接続 → 貢献中、という
+ * 参加者(peer)画面。参加 → エンジン起動 → 発表者との接続 → 貢献中、という
  * 1本の流れを出す。フェーズを決めるのは clusterReducer で、ここは表示と、
  * 参加・離脱・繋ぎ直しの操作だけを持つ。
  */
@@ -328,7 +328,7 @@ export function PeerView() {
           </div>
         )}
 
-        {phase === "connecting" && <ProgressBar value={progress} label="発表者との直接接続" />}
+        {phase === "connecting" && <ProgressBar value={progress} label="発表者との接続" />}
 
         {phase === "reorganizing" &&
           (reorganizingStalled ? (

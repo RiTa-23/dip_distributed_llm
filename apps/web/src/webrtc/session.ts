@@ -1,6 +1,7 @@
 import type { WebrtcSignalMessage } from "@dip_distributed_llm/shared-types/messages";
 import { TURN_ENV } from "../config";
 import { buildIceConfig, describeIceConfig, selectIceRoute } from "./iceConfig";
+import type { IceRoute } from "./iceConfig";
 
 // requester⇔peer のWebRTC接続を組み立てる部分の共通部品。
 // Reactに依存させていないのは、世代の判定とcandidateの順番待ちを
@@ -50,19 +51,36 @@ export const defaultPeerConnectionFactory: PeerConnectionFactory =
   createPeerConnectionFactory(ICE_CONFIG);
 
 /**
+ * `connected` 直後はまだ selected pair が stats に現れていないことがある。読めるまでの間合い。
+ * 即時1回 + ここに並べた遅延で最大3回 = 合計4回まで読みにいく。
+ */
+const ROUTE_RETRY_MS: readonly number[] = [100, 300, 1000];
+
+/**
  * 経路の診断を付ける。**参加者の操作は増やさない** — 開発者がコンソールで追えるだけ。
  * 後始末の関数を返すので、接続を畳むときに呼ぶこと。
  *
  * `addEventListener` を使うのは、両セッションが既に持っている `onicecandidate` /
  * `onconnectionstatechange` のプロパティハンドラを奪わないため。
+ *
+ * **不変条件**: 古い run は `await` の後に共有状態(`running` / `timer` / `reported`)を
+ * **一切書かない**。`clearTimeout` は既に飛んでいる `getStats()` を止められないので、
+ * 「timerを消したから安全」は成り立たない。書き込みはすべて `isMine()` の後ろに置く。
+ * これが崩れると、**畳んだはずのPeerConnectionの経路が次の世代の最中にログへ出る**。
+ * このログを実験のPASS証拠に使うので、そこが濁ると証拠にならない。
  */
-export function attachIceDiagnostics(pc: RTCPeerConnection): () => void {
+export function attachIceDiagnostics(
+  pc: RTCPeerConnection,
+  // テストから短い値を挿せるようにしておく(unitを遅くしない)
+  retryDelaysMs: readonly number[] = ROUTE_RETRY_MS,
+): () => void {
   // 偽のPeerConnectionを挿しているテストでは何もしない
   if (typeof pc.addEventListener !== "function") return () => {};
 
   const onCandidateError = (event: Event) => {
     const e = event as RTCPeerConnectionIceErrorEvent;
-    // credentialは出さない。どのTURNがどう断ったかだけ
+    // **credentialは出さない。** URL(会場LANのIPを含む)は、どのTURNがどう断ったかを
+    // 追うのに要るので出す
     console.warn("[webrtc] ICE server error", {
       url: e.url,
       errorCode: e.errorCode,
@@ -70,25 +88,87 @@ export function attachIceDiagnostics(pc: RTCPeerConnection): () => void {
     });
   };
 
+  let disposed = false;
   let reported = false;
+  let running = false;
+  let runId = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  /** この run がまだ現行か。**共有状態へ書く前に必ず通す** */
+  const isMine = (mine: number) => !disposed && mine === runId;
+
+  /** 走っているrunを失効させる。connectedを離れたときと後始末で使う */
+  const cancelRun = () => {
+    runId += 1;
+    running = false;
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  const attempt = async (index: number, mine: number): Promise<void> => {
+    if (!isMine(mine)) return;
+    if (reported || pc.connectionState !== "connected") {
+      running = false;
+      return;
+    }
+
+    let route: IceRoute | null = null;
+    try {
+      route = selectIceRoute(await pc.getStats());
+    } catch {
+      // 畳んでいる最中は普通に失敗する。「今回は読めなかった」として同じretryに乗せる
+    }
+
+    // **awaitをまたいだ。** ここから先の書き込みは自分のrunのものだけ
+    if (!isMine(mine)) return;
+    if (pc.connectionState !== "connected") {
+      running = false;
+      return;
+    }
+
+    if (route) {
+      reported = true;
+      running = false;
+      console.info("[webrtc] selected ICE route", route);
+      return;
+    }
+
+    if (index >= retryDelaysMs.length) {
+      running = false;
+      // 黙らない。ただし言えるのは「retryのあいだconnectedを保ったのに読めなかった」まで。
+      // teardown / disconnect で中断した場合はここへ来ない(infoもwarnも出ない)
+      console.warn("[webrtc] ICE route unavailable", { attempts: index + 1 });
+      return;
+    }
+
+    timer = setTimeout(() => {
+      // 古いrunが timer を null にすると、新しいrunが張ったtimerを消してしまう
+      if (!isMine(mine)) return;
+      timer = null;
+      void attempt(index + 1, mine);
+    }, retryDelaysMs[index] ?? 0);
+  };
+
   const onStateChange = () => {
-    if (reported || pc.connectionState !== "connected") return;
-    reported = true;
-    void pc
-      .getStats()
-      .then((stats) => {
-        const route = selectIceRoute(stats);
-        if (route) console.info("[webrtc] selected ICE route", route);
-      })
-      // 畳んでいる最中のPeerConnectionでは普通に失敗する。診断が取れないこと自体は
-      // 障害ではないので、unhandled rejectionにせず捨てる
-      .catch(() => {});
+    if (pc.connectionState !== "connected") {
+      // connectedを離れた。走っているrunを失効させる。戻ってくれば新しいrunを始める
+      cancelRun();
+      return;
+    }
+    if (disposed || reported || running) return;
+    // 直列。前の getStats() が未解決のうちは次を始めない
+    running = true;
+    void attempt(0, ++runId);
   };
 
   pc.addEventListener("icecandidateerror", onCandidateError);
   pc.addEventListener("connectionstatechange", onStateChange);
 
   return () => {
+    disposed = true;
+    cancelRun();
     pc.removeEventListener("icecandidateerror", onCandidateError);
     pc.removeEventListener("connectionstatechange", onStateChange);
   };

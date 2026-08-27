@@ -354,7 +354,8 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
   - 既定の `iceTransportPolicy` は `all`。**direct を優先するか relay へ回すかはICEに選ばせます** — 「direct → timeout → 張り直し → TURN」のような手書きのfallback state machineは持ちません
   - `VITE_FORCE_RELAY=1` は**検証専用**で、relay経路だけを試すためのものです。本番では使いません
   - 実装は [`webrtc/iceConfig.ts`](../apps/web/src/webrtc/iceConfig.ts)(純粋)と `webrtc/session.ts` の `createPeerConnectionFactory`。requester/peer のどちらにもTURN固有の分岐はありません
-  - 開発者向けに `icecandidateerror` と、繋がった後の selected candidate pair を1回だけコンソールへ出します(`attachIceDiagnostics`)。**credentialもIPも出しません**
+  - 開発者向けに `icecandidateerror` と、繋がった後の selected candidate pair をコンソールへ出します(`attachIceDiagnostics`)。**credential は絶対に出しません。**ただし **TURN の URL(会場LANのIPを含む)と ICE server のエラーは診断情報として出ます** — どのTURNがどう断ったかが追えないと、実験で原因を切り分けられないためです
+  - selected pair は `connected` 直後だとまだ stats に現れないことがあるので、100 / 300 / 1000ms で最大3回だけ読み直します(直列)。読めたら `[webrtc] selected ICE route` を1回、retry のあいだ `connected` を保ったのに読めなければ `[webrtc] ICE route unavailable` を1回出します。**teardown や disconnect で中断した場合はどちらも出ません**(「ログが無い = connected 未到達」とは読めません。DataChannel の `open` 自体が connected の証拠になります)
   - **まだ実機で通していません。** 同一PCの forced relay も物理2PCも未実施です
 - 会場のAPアイソレーションが有効な場合、TURNがあれば中継で通せる見込みですが、これも未実測です(`docs/webrtc-implementation.md`)
 - **WebRTCの失敗で `peer_status: "error"` を送るようになりました(#79)。** 以前はサーバの「全員ready」が崩れて次の世代が始まらず、1人の失敗で全体が止まるため送っていませんでしたが、#57でHonoが `status: "error"` のpeerを編成から外すようになったため解消しました。復帰時の `ready` 送り直しは、離脱→再参加で `useWasmEngine` の `onReady` が通る既存の経路に乗っています

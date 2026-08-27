@@ -581,7 +581,7 @@ describe("createRequesterSession", () => {
     // ここを onFailed だけにすると fence を通らず、旧Runtimeが現行の持ち主のまま残る
     expect(r.order).toEqual(["onClose", "onFailed"]);
     expect(r.failed).toEqual([
-      { generation: 5, remoteId: "c-a", message: "c-a との直接接続に失敗しました" },
+      { generation: 5, remoteId: "c-a", message: "c-a との接続に失敗しました" },
     ]);
   });
 
@@ -834,6 +834,30 @@ const relayStats = () =>
     ["R1", { type: "remote-candidate", candidateType: "relay", protocol: "udp" }],
   ]);
 
+type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
+
+/** 解決の時点をテストから決められる Promise。in-flight の getStats を作るのに使う */
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+/** マイクロタスクと setTimeout(0) を数回ぶん流す(retry の連鎖を進めるため) */
+async function flushTimers(times = 8): Promise<void> {
+  for (let i = 0; i < times; i += 1) await flush();
+}
+
+type SpyCalls = { mock: { calls: readonly (readonly unknown[])[] } };
+
+const routeLogsIn = (spy: SpyCalls) =>
+  spy.mock.calls.filter((c) => String(c[0]).includes("selected ICE route"));
+
+const unavailableLogsIn = (spy: SpyCalls) =>
+  spy.mock.calls.filter((c) => String(c[0]).includes("ICE route unavailable"));
+
 describe("attachIceDiagnostics", () => {
   test("addEventListener を持たない偽PeerConnectionでも落ちない", () => {
     // 既存のセッションテストは受け口だけ備えた偽物を挿している。診断で落としてはいけない
@@ -879,19 +903,185 @@ describe("attachIceDiagnostics", () => {
     }
   });
 
-  test("getStats が失敗しても投げない(畳んでいる最中は普通に失敗する)", async () => {
+  test("リトライ無しなら getStats は1回。失敗しても投げない", async () => {
+    // 畳んでいる最中の PeerConnection では getStats() は普通に失敗する。
+    // 握らないと unhandled rejection になる。retry の本数はここでは見ないので
+    // `retryDelaysMs: []` を明示して「1回だけ」を固定する
     let called = 0;
     const pc = fakeDiagPc(() => {
       called += 1;
       return Promise.reject(new Error("closed"));
     });
-    attachIceDiagnostics(pc as unknown as RTCPeerConnection);
+    attachIceDiagnostics(pc as unknown as RTCPeerConnection, []);
 
     pc.connectionState = "connected";
     expect(() => pc.listeners.get("connectionstatechange")?.()).not.toThrow();
-    await flush();
+    await flushTimers();
 
-    // 握らないと unhandled rejection になる
     expect(called).toBe(1);
+  });
+
+  test("1回目で読めなくても、再試行して読めた時点で1回だけ出す", async () => {
+    // connected 直後はまだ selected pair が stats に無いことがある。1回勝負にすると、
+    // WebRTC は正常なのに経路ログだけ出ない — 実験の証拠として使えなくなる
+    const info = spyOn(console, "info").mockImplementation(() => {});
+    try {
+      let calls = 0;
+      const pc = fakeDiagPc(async () => {
+        calls += 1;
+        return calls >= 3 ? relayStats() : new Map<string, unknown>();
+      });
+      attachIceDiagnostics(pc as unknown as RTCPeerConnection, [0, 0, 0]);
+
+      pc.connectionState = "connected";
+      pc.listeners.get("connectionstatechange")?.();
+      await flushTimers();
+
+      expect(calls).toBe(3);
+      expect(routeLogsIn(info)).toHaveLength(1);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  test("最後まで読めなければ warn を1回出す(info は出さない)", async () => {
+    // 黙ると「そもそも connected になっていない」のか「読めなかった」のか区別できない
+    const info = spyOn(console, "info").mockImplementation(() => {});
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      let calls = 0;
+      const pc = fakeDiagPc(async () => {
+        calls += 1;
+        return new Map<string, unknown>();
+      });
+      attachIceDiagnostics(pc as unknown as RTCPeerConnection, [0, 0, 0]);
+
+      pc.connectionState = "connected";
+      pc.listeners.get("connectionstatechange")?.();
+      await flushTimers();
+
+      expect(calls).toBe(4); // 即時1回 + retry 3回
+      expect(unavailableLogsIn(warn)).toHaveLength(1);
+      expect(routeLogsIn(info)).toHaveLength(0);
+    } finally {
+      info.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  test("後始末したあとは、待っていた再試行が発火しない", async () => {
+    let calls = 0;
+    const pc = fakeDiagPc(async () => {
+      calls += 1;
+      return new Map<string, unknown>();
+    });
+    const detach = attachIceDiagnostics(pc as unknown as RTCPeerConnection, [5, 5, 5]);
+
+    pc.connectionState = "connected";
+    pc.listeners.get("connectionstatechange")?.();
+    await flush();
+    expect(calls).toBe(1);
+
+    detach();
+    await flushTimers();
+
+    expect(calls).toBe(1);
+  });
+
+  test("後始末したあとに getStats が解決しても、何も出さない", async () => {
+    // **clearTimeout では既に飛んでいる getStats() を止められない。** 止めそこねると、
+    // 畳んだはずの PeerConnection の経路が次の世代の最中にログへ出る
+    const info = spyOn(console, "info").mockImplementation(() => {});
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const pending = deferred<Map<string, unknown>>();
+      const pc = fakeDiagPc(() => pending.promise);
+      const detach = attachIceDiagnostics(pc as unknown as RTCPeerConnection, [0, 0, 0]);
+
+      pc.connectionState = "connected";
+      pc.listeners.get("connectionstatechange")?.();
+
+      detach(); // getStats は未解決のまま
+      pending.resolve(relayStats());
+      await flushTimers();
+
+      expect(routeLogsIn(info)).toHaveLength(0);
+      expect(unavailableLogsIn(warn)).toHaveLength(0);
+    } finally {
+      info.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  test("connected を離れると run が失効し、戻れば新しい run が始まる", async () => {
+    const info = spyOn(console, "info").mockImplementation(() => {});
+    try {
+      let calls = 0;
+      const pc = fakeDiagPc(async () => {
+        calls += 1;
+        return relayStats();
+      });
+      attachIceDiagnostics(pc as unknown as RTCPeerConnection, [0, 0, 0]);
+      const onState = pc.listeners.get("connectionstatechange");
+
+      pc.connectionState = "disconnected";
+      onState?.();
+      expect(calls).toBe(0);
+
+      pc.connectionState = "connected";
+      onState?.();
+      await flushTimers();
+
+      expect(calls).toBe(1);
+      expect(routeLogsIn(info)).toHaveLength(1);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  test("古い run が遅れて解決しても、繋ぎ直した新しい run を潰さない", async () => {
+    // 古い run が await の後に共有状態(running / timer / reported)を書くと、
+    // 新しい run の直列制御が壊れて二重に走る
+    const info = spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const pending: Deferred<Map<string, unknown>>[] = [];
+      let calls = 0;
+      const pc = fakeDiagPc(() => {
+        calls += 1;
+        const d = deferred<Map<string, unknown>>();
+        pending.push(d);
+        return d.promise;
+      });
+      attachIceDiagnostics(pc as unknown as RTCPeerConnection, [0, 0, 0]);
+      const onState = pc.listeners.get("connectionstatechange");
+
+      // 1本目。getStats は未解決のまま
+      pc.connectionState = "connected";
+      onState?.();
+      expect(calls).toBe(1);
+
+      // 切れて、繋ぎ直る。1本目は失効し、2本目が始まる
+      pc.connectionState = "disconnected";
+      onState?.();
+      pc.connectionState = "connected";
+      onState?.();
+      expect(calls).toBe(2);
+
+      // **古い方**が遅れて解決する。共有状態に触ってはいけない
+      pending[0]?.resolve(new Map<string, unknown>());
+      await flushTimers();
+
+      // ここが要。古い run が running を落としていれば、次の connected で3本目が走る
+      onState?.();
+      expect(calls).toBe(2);
+
+      // 2本目は生きている。読めれば1回だけ出す
+      pending[1]?.resolve(relayStats());
+      await flushTimers();
+
+      expect(routeLogsIn(info)).toHaveLength(1);
+    } finally {
+      info.mockRestore();
+    }
   });
 });

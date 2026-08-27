@@ -32,7 +32,7 @@ export class IceConfigError extends Error {
   }
 }
 
-/** 実際に選ばれたICEの経路。IPやcredentialは持たない */
+/** 実際に選ばれたICEの経路。**この経路情報には** IP も credential も含めない(種別とプロトコルだけ) */
 export type IceRoute = {
   localType: string;
   remoteType: string;
