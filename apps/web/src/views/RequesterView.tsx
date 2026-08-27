@@ -141,8 +141,13 @@ export function RequesterView() {
         } finally {
           reader.releaseLock();
         }
-      } catch {
-        if (!disposed) startFallback();
+      } catch (error) {
+        if (disposed) return;
+        const message = error instanceof Error ? error.message : String(error);
+        dispatch({
+          type: "failed",
+          message: `モデルを取得できませんでした: ${message}`,
+        });
       }
     };
 
@@ -152,7 +157,7 @@ export function RequesterView() {
       controller.abort();
       if (fallbackTimer !== null) clearInterval(fallbackTimer);
     };
-  }, []);
+  }, [dispatch]);
 
   // トラックB: 編成。接続できたら名乗り、すぐ準備完了とする(発表者に起動待ちはない)
   useEffect(() => {
