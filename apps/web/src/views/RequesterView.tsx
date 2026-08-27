@@ -84,7 +84,13 @@ export function RequesterView() {
     lastMessage,
     send,
     ...rpc.handlers,
-    onFailed: (message) => dispatch({ type: "failed", message }),
+    // 失敗を伝えないと、Hono は active のまま固まって誰かの切断待ちになる(#78)。
+    // 世代番号は useWebrtcSignaling が古い世代の失敗を既に落としているので、
+    // コールバックが届いた時点の state.generation が現在の世代と一致する
+    onFailed: (message) => {
+      dispatch({ type: "failed", message });
+      send({ type: "generation_failed", generation: state.generation });
+    },
   });
   const distribution =
     rtc.expectedIds.length === 0 ? 0 : rtc.openIds.length / rtc.expectedIds.length;
