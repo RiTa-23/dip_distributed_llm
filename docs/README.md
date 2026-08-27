@@ -11,5 +11,6 @@
 | [frontend.md](./frontend.md) | フロントエンドの現状・画面の状態・書き方の決まり |
 | [tech-selection-rationale.md](./tech-selection-rationale.md) | 技術選定の理由 |
 | [comparison-with-llmlet.md](./comparison-with-llmlet.md) | llmletとの差分・比較 |
+| [demo-checklist.md](./demo-checklist.md) | デモ当日に上から順に叩く手順(#23) |
 
 AIコーディングエージェント(Claude Code, Codexなど)向けの前提情報はリポジトリルートの `AGENTS.md` を参照してください。
