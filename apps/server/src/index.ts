@@ -132,6 +132,10 @@ app.get(
           case "requester_accepting":
             if (clientId) coordinator.requesterAccepting(clientId, msg.accepting);
             break;
+          case "generation_failed":
+            // requester かどうか・世代が合っているかは roster 側で見る(#56)
+            if (clientId) coordinator.generationFailed(clientId, msg.generation);
+            break;
         }
       },
       onClose() {

@@ -5,6 +5,7 @@ import type {
 } from "@dip_distributed_llm/shared-types/messages";
 import {
   applyDisconnect,
+  applyGenerationFailed,
   applyHello,
   applyPeerStatus,
   applyRequesterAccepting,
@@ -281,5 +282,146 @@ describe("webrtc_signal 中継", () => {
     expect(applySignal(s, "p1", fromPeer)).toEqual([
       { kind: "unicast", targetId: "req", msg: fromPeer },
     ]);
+  });
+});
+
+describe("errorのpeerを編成から外す(#57)", () => {
+  test("1台がerrorでも、残りのreadyな人だけで世代が始まる", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "p2", "peer", "P2");
+    applyPeerStatus(s, "p1", "ready");
+    const eff = applyPeerStatus(s, "p2", "error");
+
+    const start = firstOf(eff, "generation_start");
+    expect(start).toBeDefined();
+    expect(start?.peerIds).toEqual(["p1"]); // errorのp2は含めない
+  });
+
+  test("connecting の人がいるあいだは待つ(準備中を置き去りにしない)", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "p2", "peer", "P2");
+    const eff = applyPeerStatus(s, "p1", "ready"); // p2 はまだ connecting
+    expect(firstOf(eff, "generation_start")).toBeUndefined();
+  });
+
+  test("全員がerrorなら世代を始めない", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    const eff = applyPeerStatus(s, "p1", "error");
+    expect(firstOf(eff, "generation_start")).toBeUndefined();
+  });
+
+  test("errorから復帰してreadyを送り直すと編成に戻る", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "p2", "peer", "P2");
+    applyPeerStatus(s, "p1", "ready");
+    applyPeerStatus(s, "p2", "error"); // gen 1 は p1 だけで開始
+    const eff = applyPeerStatus(s, "p2", "ready"); // 復帰
+
+    const start = firstOf(eff, "generation_start");
+    expect(start?.peerIds.sort()).toEqual(["p1", "p2"]);
+  });
+});
+
+describe("generation_failed による復帰(#56)", () => {
+  /** requester と2台のpeerで世代1を開始した状態を作る。 */
+  function started() {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "p2", "peer", "P2");
+    applyPeerStatus(s, "p1", "ready");
+    applyPeerStatus(s, "p2", "ready");
+    expect(s.phase).toBe("active");
+    expect(s.generation).toBe(1);
+    return s;
+  }
+
+  test("requesterからの通知で idle に戻り、中断を全員に知らせる", () => {
+    const s = started();
+    const eff = applyGenerationFailed(s, "req", 1);
+
+    const aborted = firstOf(eff, "generation_aborted");
+    expect(aborted?.reason).toBe("connection_failed");
+    expect(aborted?.generation).toBe(1); // 中断した現世代の番号
+    expect(s.phase).toBe("idle");
+  });
+
+  test("同じ顔ぶれのままでは組み直さない(失敗の繰り返しを防ぐ)", () => {
+    const s = started();
+    const eff = applyGenerationFailed(s, "req", 1);
+    expect(firstOf(eff, "generation_start")).toBeUndefined();
+    expect(s.generation).toBe(1); // 世代番号も進めない
+  });
+
+  test("顔ぶれが変われば組み直す", () => {
+    const s = started();
+    applyGenerationFailed(s, "req", 1);
+    // 失敗したp2がerrorを報告 → 顔ぶれが p1 だけに変わる
+    const eff = applyPeerStatus(s, "p2", "error");
+
+    const start = firstOf(eff, "generation_start");
+    expect(start?.peerIds).toEqual(["p1"]);
+    expect(s.generation).toBe(2);
+  });
+
+  test("新しい参加者が来ても顔ぶれが変わるので組み直す", () => {
+    const s = started();
+    applyGenerationFailed(s, "req", 1);
+    applyHello(s, "p3", "peer", "P3");
+    const eff = applyPeerStatus(s, "p3", "ready");
+
+    const start = firstOf(eff, "generation_start");
+    expect(start?.peerIds.sort()).toEqual(["p1", "p2", "p3"]);
+  });
+
+  test("requester以外からの送信は無視する", () => {
+    const s = started();
+    expect(applyGenerationFailed(s, "p1", 1)).toEqual([]);
+    expect(s.phase).toBe("active");
+  });
+
+  test("未知のクライアントからの送信は無視する", () => {
+    const s = started();
+    expect(applyGenerationFailed(s, "unknown", 1)).toEqual([]);
+    expect(s.phase).toBe("active");
+  });
+
+  test("古い世代の通知は無視する(遅れて届いた分で現世代を壊さない)", () => {
+    const s = started();
+    expect(applyGenerationFailed(s, "req", 0)).toEqual([]);
+    expect(s.phase).toBe("active");
+    expect(s.generation).toBe(1);
+  });
+
+  test("idle 中の通知は無視する", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    expect(s.phase).toBe("idle");
+    expect(applyGenerationFailed(s, "req", 0)).toEqual([]);
+  });
+
+  test("失敗の記録は次の世代が始まると消える", () => {
+    const s = started();
+    applyGenerationFailed(s, "req", 1);
+    expect(s.failedPeerIds).toEqual(["p1", "p2"]);
+    applyHello(s, "p3", "peer", "P3");
+    applyPeerStatus(s, "p3", "ready"); // 顔ぶれが変わって gen 2 開始
+    expect(s.failedPeerIds).toBeNull();
+  });
+
+  test("切断は failedPeerIds に関係なく従来通り再編成する(非退行)", () => {
+    const s = started();
+    applyGenerationFailed(s, "req", 1); // p1,p2 で失敗を記録
+    const eff = applyDisconnect(s, "p2"); // 顔ぶれが p1 だけになる
+    const start = firstOf(eff, "generation_start");
+    expect(start?.peerIds).toEqual(["p1"]);
   });
 });

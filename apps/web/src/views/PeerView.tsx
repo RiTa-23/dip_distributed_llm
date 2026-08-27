@@ -67,6 +67,10 @@ const REORGANIZING_TEXT: Record<AbortReason, { hint: string; notice: string }> =
     hint: "参加者が減りました",
     notice: "抜けたぶんを埋めて組み直しています",
   },
+  connection_failed: {
+    hint: "接続がうまくいきませんでした",
+    notice: "つながる相手だけで組み直しています",
+  },
 };
 
 const REORGANIZING_FALLBACK = {

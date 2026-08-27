@@ -50,6 +50,7 @@ SDP/ICE candidateをHono経由で相手に転送。requester→peer、peer→req
 `reason`:
 - `peer_disconnected`: 既存peerの切断で編成が壊れた
 - `peer_joined`: 生成中に新規peerが`ready`になり、Honoが能動的に組み直した(後述`requester_accepting`が`true`の間のみ)
+- `connection_failed`: requesterが後述`generation_failed`を送ってきた(その編成では接続が成立しなかった)
 
 ### 7. `requester_accepting` (client → server, requesterのみ)
 生成中(`active`)に新規peerが加入してもよいかをrequesterが伝える。Honoは送信者がrole===`requester`であることを検証し、それ以外からの送信は無視する。
@@ -60,6 +61,31 @@ SDP/ICE candidateをHono経由で相手に転送。requester→peer、peer→req
 - `true`に戻した瞬間、その間に溜まった未加入readyペアをまとめて1回の`generation_aborted`(reason: `peer_joined`)→`generation_start`で取り込む
 - 既定値は`true`(このメッセージを送らなくても、新規peerがreadyになれば従来通り即座に再編成される)
 - requesterが切断/再接続すると`true`にリセットされる
+
+### 8. `generation_failed` (client → server, requesterのみ)
+`generation_start`を受けたrequesterが、WebRTC接続やモデル配布に失敗して**その編成が成立しなかった**ことを伝える。
+```json
+{ "type": "generation_failed", "generation": 3 }
+```
+- Honoは送信者が`requester`であること、`generation`が**現在の世代と一致すること**、`phase`が`active`であることを検証する。いずれかを満たさなければ無視する
+- 受理すると`generation_aborted`(reason: `connection_failed`)を全員に配信して`idle`に戻す
+- これが無いと、`active`から`idle`へ戻る道が「誰かの切断」しか無く、requesterが1人でも接続に失敗した時点で**次の世代が永久に始まらない**
+- **同じ顔ぶれでの即時リトライはしない。** 失敗した編成のpeerIdを覚えておき、次に組める顔ぶれがそれと同一なら`generation_start`を出さない。同じ組み合わせを繰り返し失敗しながら通知を撒き続けるのを防ぐため。誰かが増減するか、peerの`status`が変わって顔ぶれが変われば再開する
+- したがって、接続に失敗したpeerは`peer_status: "error"`を送ることが望ましい(下記「世代開始の条件」を参照)
+
+## 世代開始の条件
+
+Honoが`generation_start`を出すのは、次をすべて満たすときだけ。
+
+1. `phase`が`idle`
+2. `requester`が接続している
+3. `connecting`のpeerが1人もいない(準備中の人を置き去りにしない)
+4. `ready`のpeerが1人以上いる
+5. その顔ぶれが、直前に`generation_failed`で失敗した顔ぶれと同一でない
+
+**`error`のpeerは編成から除外する**(4に数えない)。以前は「peer全員が`ready`」を要求していたため、1台でも`error`になると次の世代が永久に始まらず、フロントは`error`を送るに送れない状態だった。除外することで、不調な1台が全体を止めなくなる。`error`のpeerが`ready`を送り直せば、次の再編成で編成に戻る。
+
+`generation_start`の`peerIds`にも`error`のpeerは含めない。
 
 ## データプレーン注記
 
