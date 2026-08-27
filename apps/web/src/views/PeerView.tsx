@@ -79,6 +79,21 @@ const REORGANIZING_FALLBACK = {
 };
 
 /**
+ * 再編成中の見た目のトーン(#68)。「人が増えた」は嬉しい出来事、
+ * 「誰か落ちた」は残念な出来事なので、同じ扱いにしない。
+ */
+const REORGANIZING_TONE: Record<AbortReason, "joyful" | "calm"> = {
+  peer_joined: "joyful",
+  peer_disconnected: "calm",
+  connection_failed: "calm",
+};
+
+function reorganizingTone(reason: AbortReason | null): "joyful" | "calm" {
+  if (!reason) return "calm";
+  return REORGANIZING_TONE[reason] ?? "calm";
+}
+
+/**
  * 再編成が長引いたときの案内(#63)。文字列をJSXの中に直接置くと、行を折り返した
  * ぶんが半角スペースとして描画されて日本語の途中に隙間ができるため、ここで組む。
  */
@@ -116,6 +131,7 @@ export function PeerView() {
   const { phase } = state;
   const isActive = phase === "active";
   const reorganizing = reorganizingText(state.abortReason);
+  const reorganizingNoticeTone = reorganizingTone(state.abortReason);
 
   // 再編成中から出る道はサーバの generation_start しかない。requesterが居ない、
   // 誰かが ready にならない、といった理由で次の世代が組めないと、画面は無言のまま
@@ -316,7 +332,11 @@ export function PeerView() {
               </button>
             </div>
           ) : (
-            <p className={styles.notice}>{reorganizing.notice}</p>
+            <p
+              className={`${styles.notice} ${reorganizingNoticeTone === "joyful" ? styles.noticeJoyful : styles.noticeCalm}`}
+            >
+              {reorganizing.notice}
+            </p>
           ))}
 
         {(phase === "connecting" || phase === "active" || phase === "reorganizing") && (

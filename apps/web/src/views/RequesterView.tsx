@@ -18,6 +18,13 @@ import styles from "./RequesterView.module.css";
 
 type ChatEntry = { role: "user" | "assistant"; text: string };
 
+/**
+ * トースト1件ぶんの中身とトーン(#68)。「人が増えた」は嬉しい出来事、
+ * 「誰か落ちた」は残念な出来事なので、同じ扱いにしない。編成完了などの
+ * 単なる進行の合図は info(装飾なし)にする
+ */
+type Toast = { text: string; tone: "info" | "joyful" | "calm" };
+
 const NOTICE: Partial<Record<Phase, string>> = {
   idle: "サーバーに接続していません",
   preparing: "参加者がそろうのを待っています",
@@ -65,7 +72,7 @@ export function RequesterView() {
   const previousRosterSize = useRef(state.roster.length);
   const previousGenerating = useRef(generating);
   const previousConnectStalled = useRef(false);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
 
   const { phase } = state;
 
@@ -172,7 +179,12 @@ export function RequesterView() {
     if (currentSize === previousSize) return;
 
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast(`${previousSize}台→${currentSize}台に更新`);
+    // 増えたか減ったかだけで見せ方を分ける(#68)。理由の詳細はabortMessage側の
+    // トーストが別途出すので、ここは台数の増減という事実だけを見る
+    setToast({
+      text: `${previousSize}台→${currentSize}台に更新`,
+      tone: currentSize > previousSize ? "joyful" : "calm",
+    });
     toastTimer.current = window.setTimeout(() => setToast(null), 3200);
   }, [state.roster.length]);
 
@@ -181,14 +193,19 @@ export function RequesterView() {
     if (!message) return;
 
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast(message);
+    // 再編成のきっかけが「人が増えた」ことなら祝い、それ以外(誰かが抜けた・
+    // 繋がらなかった)は落ち着いた見せ方に留める(#68)
+    setToast({
+      text: message,
+      tone: state.abortReason === "peer_joined" ? "joyful" : "calm",
+    });
     toastTimer.current = window.setTimeout(() => setToast(null), 3200);
-  }, [state.abortMessage]);
+  }, [state.abortMessage, state.abortReason]);
 
   useEffect(() => {
     if (!lastMessage || lastMessage.type !== "generation_start") return;
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast("編成が完了しました");
+    setToast({ text: "編成が完了しました", tone: "info" });
     toastTimer.current = window.setTimeout(() => setToast(null), 3200);
   }, [lastMessage]);
 
@@ -326,8 +343,11 @@ export function RequesterView() {
 
         <section className={styles.chat}>
           {toast && (
-            <div className={styles.toast} role="status">
-              {toast}
+            <div
+              className={`${styles.toast} ${toast.tone === "joyful" ? styles.toastJoyful : toast.tone === "calm" ? styles.toastCalm : ""}`}
+              role="status"
+            >
+              {toast.text}
             </div>
           )}
           {notice && <div className={styles.notice}>{notice}</div>}

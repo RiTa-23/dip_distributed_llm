@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ClientMessage,
+  GenerationAbortedMessage,
   PeerInfo,
   ServerMessage,
 } from "@dip_distributed_llm/shared-types/messages";
@@ -78,14 +79,19 @@ export function useHonoSocketMock({ enabled }: SocketOptions): HonoSocket {
     emit({ type: "roster_update", peers: [...peers.current] });
   }, [emit]);
 
-  const emitAborted = useCallback(() => {
-    emit({
-      type: "generation_aborted",
-      generation: generation.current,
-      reason: "peer_disconnected",
-      message: "メンバーが変わったため再編成します",
-    });
-  }, [emit]);
+  // 理由を呼び出し側から渡す(#68以前は常に peer_disconnected 固定で、
+  // 参加者が増えたときの演出を本物のHonoに繋がずには確認できなかった)
+  const emitAborted = useCallback(
+    (reason: GenerationAbortedMessage["reason"], message: string) => {
+      emit({
+        type: "generation_aborted",
+        generation: generation.current,
+        reason,
+        message,
+      });
+    },
+    [emit],
+  );
 
   const startGeneration = useCallback(() => {
     generation.current += 1;
@@ -116,7 +122,7 @@ export function useHonoSocketMock({ enabled }: SocketOptions): HonoSocket {
       peers.current = [...peers.current, { clientId: randomId(), displayName, status: "ready" }];
       emitRoster();
       // 新しい人が来ても全員を組み直す方針(異常系を1パターンに保つため)
-      emitAborted();
+      emitAborted("peer_joined", "新しい参加者が加わりました");
     },
     [emitRoster, emitAborted],
   );
@@ -125,7 +131,7 @@ export function useHonoSocketMock({ enabled }: SocketOptions): HonoSocket {
     if (peers.current.length === 0) return;
     peers.current = peers.current.slice(0, -1);
     emitRoster();
-    emitAborted();
+    emitAborted("peer_disconnected", "メンバーが変わったため再編成します");
   }, [emitRoster, emitAborted]);
 
   return {
