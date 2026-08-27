@@ -83,6 +83,8 @@ idle ─→ preparing ─→ waiting ─→ connecting ─→ active
 
 発表者側は `generation_failed` を送るようになりました(#78)。WebRTC接続に失敗すると `RequesterView` の `onFailed` から送信し、Honoが `generation_aborted`(`connection_failed`)で編成を組み直します。参加者側の「時間で気づく」しくみ(上記)は、requesterが失敗以外の理由で無言のまま止まった場合の保険として残っています。
 
+**ただし `onFailed` が発火するまでが速いとは限りません**(2026/8/27の実機確認で判明)。参加者が「answerを返さないまま黙る」形で落ちると、発表者の `RTCPeerConnection` は `connectionState` が `failed` になるまで、つまりICEが諦めるまで何も言いません。その間 Honoから見た `phase` は `active` のままなので、落ちた参加者が `peer_status: "error"` を送っていても(#79)編成は組み直されず、発表者画面は `connecting` で止まり続けます。**復帰の速さは #79 ではなく発表者側の失敗検知の速さで決まります。** 再現手順は [`webrtc-implementation.md`](webrtc-implementation.md) の「2台の参加者で異常系を確かめる」にあります。
+
 ### 発表者だけ、もう1本のトラックが並行する
 
 モデル(GGUF)のダウンロードは数GBあるので、編成の進行とは**独立して**画面を開いた瞬間から走ります。
@@ -317,6 +319,9 @@ offer より先に candidate が届くことはありませんが、`setRemoteDe
 
 - **TURNは持ちません。** 会場のAPアイソレーションが有効だとP2Pが成立しません(`docs/webrtc-implementation.md`)。ローカル検証では踏みません
 - **WebRTCの失敗で `peer_status: "error"` を送るようになりました(#79)。** 以前はサーバの「全員ready」が崩れて次の世代が始まらず、1人の失敗で全体が止まるため送っていませんでしたが、#57でHonoが `status: "error"` のpeerを編成から外すようになったため解消しました。復帰時の `ready` 送り直しは、離脱→再参加で `useWasmEngine` の `onReady` が通る既存の経路に乗っています
+- **編成から外れた参加者が `connecting` で止まります**(2026/8/27の実機確認で判明、未修正)。`clusterReducer` の `generation_start` は `peerIds` に自分が居るかを見ずに `phase: "connecting"` へ進めるため、Honoが除外した参加者も来ないofferを待ち続けます。スタック検知(`useStalled`)は `reorganizing` にしか付いていないので逃げ道がありません
+  - #57(Honoが `status: "error"` のpeerを編成から外す)と#79(そのerrorを実際に送る)が揃って初めて到達する経路です。それまでは誰も除外されなかったので出ませんでした
+  - `error` だった参加者も `generation_start` で `connecting` へ飛ばされ、失敗の理由が画面から消えます
 - **WASM本体がありません。** `peerManager.ts` は両画面に繋ぎ込み済みで、DataChannelが開けば `attach` まで走ります。差し込む起動処理も入りました(上の「①のWASMを起動する」)が、差し込む相手(`llmlet-mod.js` / `.wasm`)が①からまだ来ていないため、既定ではダミー経路を通ります
   - **RPCのバイト列そのものは、WASMの代役スタブで流して確認済みです**(2026/8/25、#44)。実物のDataChannelで16MiBの往復がバイト一致で通っています。開発中は参加者のタブで `__rpc.serve()`、発表者のタブで `await __rpc.check()` で試せます(`docs/webrtc-implementation.md` の「WASMの代役スタブで確認したこと」)
 
