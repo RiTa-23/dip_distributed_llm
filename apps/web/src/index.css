@@ -10,6 +10,14 @@
   --c-active: #f9b931;
   --c-text: #f7f1e4;
 
+  /*
+   * ピア状態ドット用の2色(#96)。基本方針は「新しい色相は足さない」だが、
+   * connecting(error)を一覧でひと目で分けるには黄・青と見分けがつく色が
+   * 必要なので追加した。ready は --c-active(黄)をそのまま使う。
+   */
+  --c-warn: #e0913e; /* connecting: 準備中 */
+  --c-danger: #d25447; /* error: 不調 */
+
   /* 上の4色からの派生。新しい色相は足さず、混ぜ具合だけを変えている */
   --c-surface: color-mix(in srgb, var(--c-text) 6%, var(--c-bg));
   --c-surface-2: color-mix(in srgb, var(--c-text) 11%, var(--c-bg));
