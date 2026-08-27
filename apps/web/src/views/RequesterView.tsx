@@ -119,7 +119,8 @@ export function RequesterView() {
     const download = async () => {
       try {
         const response = await fetch(`/models/${MODEL_NAME}`, { signal: controller.signal });
-        if (!response.ok || !response.body) throw new Error(`model download failed: ${response.status}`);
+        if (!response.ok || !response.body)
+          throw new Error(`model download failed: ${response.status}`);
 
         const total = Number(response.headers.get("content-length"));
         if (!Number.isFinite(total) || total <= 0) {
