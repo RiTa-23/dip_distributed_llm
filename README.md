@@ -12,7 +12,7 @@
 
 ## リポジトリ構成
 
-```
+```text
 apps/web/               React (requester画面 / peer参加画面)
 apps/server/             Hono コーディネータ
 packages/shared-types/    WebSocketメッセージの型定義(messages.ts)
@@ -67,9 +67,11 @@ bun install
 
 ### 初回セットアップ
 
+**この節のコマンドはすべてリポジトリルートから実行する。** `--cwd` で対象の
+workspaceを指定するので、`cd` して回る必要はない。
+
 ```bash
-cd apps/server
-bun run setup
+bun run --cwd apps/server setup
 ```
 
 証明書・ダミーモデル・フロント成果物をまとめて用意する。**これをやらないと
@@ -80,20 +82,30 @@ HTTPSにならず、モデルの配信先も空になる。**
 **通常はこれだけ。** Honoがフロントも配信するので、単一オリジンで完結する。
 
 ```bash
-cd apps/server && bun run dev
+bun run --cwd apps/server dev
 ```
 
 `https://localhost:8443` で開く。同じLANの他端末からは、発表者画面のQR(または
 `/join-info` が返すURL)を使う。
 
 **フロントを触るときだけ**、Viteの開発サーバを併用する(ホットリロードが効く)。
+ターミナルを2つ使う。
 
 ```bash
 # ターミナル1: Honoサーバ
-cd apps/server && bun run dev
+bun run --cwd apps/server dev
+```
 
+```bash
 # ターミナル2: Viteの開発サーバ
-cd apps/web && VITE_HONO_ORIGIN=https://localhost:8443 bun run dev
+VITE_HONO_ORIGIN=https://localhost:8443 bun run --cwd apps/web dev
+```
+
+**Windows (PowerShell)** は環境変数の渡し方が違う。
+
+```powershell
+# ターミナル2: Viteの開発サーバ
+$env:VITE_HONO_ORIGIN="https://localhost:8443"; bun run --cwd apps/web dev
 ```
 
 `VITE_HONO_ORIGIN` を渡すと、Viteが `/ws`・`/join-info`・`/models` をHonoへ中継する。
