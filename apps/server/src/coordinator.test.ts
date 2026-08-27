@@ -327,7 +327,7 @@ describe("参加統計(#60)", () => {
     expect(co.status().stats.peakPeers).toBe(3); // 最大値は下がらない
   });
 
-  test("開始した世代の数を数える", () => {
+  test("開始した世代の数は generation で分かる(統計に重ねて持たない)", () => {
     const co = new Coordinator();
     const req = fakeSocket();
     const p1 = fakeSocket();
@@ -337,7 +337,7 @@ describe("参加統計(#60)", () => {
     co.peerStatus("p1", "ready"); // gen 1
     co.hello("p2", "peer", "P2", p2);
     co.peerStatus("p2", "ready"); // gen 2(生成中の加入で再編成)
-    expect(co.status().stats.generationsStarted).toBe(2);
+    expect(co.status().generation).toBe(2);
   });
 });
 

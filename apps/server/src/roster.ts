@@ -53,8 +53,6 @@ export type ClusterStats = {
   totalPeers: number;
   /** 同時に接続していた peer の最大数 */
   peakPeers: number;
-  /** 開始した世代の数(= 現在の generation と同じだが、意味を分けて持つ) */
-  generationsStarted: number;
 };
 
 /** wiring 層が解釈する送出指示。broadcast=全員へ / unicast=targetId のみへ。 */
@@ -70,7 +68,7 @@ export function createState(): ClusterState {
     activeGenerationPeerIds: null,
     acceptingGrowth: true,
     failedPeerIds: null,
-    stats: { totalPeers: 0, peakPeers: 0, generationsStarted: 0 },
+    stats: { totalPeers: 0, peakPeers: 0 },
     seenPeerIds: new Set(),
   };
 }
@@ -164,7 +162,6 @@ function maybeStartGeneration(state: ClusterState): Effect[] {
 
   state.failedPeerIds = null;
   state.generation += 1;
-  state.stats.generationsStarted += 1;
   state.phase = "active";
   state.activeGenerationPeerIds = peerIds;
   const msg: GenerationStartMessage = {

@@ -1,4 +1,5 @@
 import type {
+  PeerInfo,
   PeerStatus,
   Role,
   WebrtcSignalMessage,
@@ -25,7 +26,7 @@ export type StatusSnapshot = {
   generation: number;
   acceptingGrowth: boolean;
   requesterConnected: boolean;
-  peers: { clientId: string; displayName: string; status: string }[];
+  peers: PeerInfo[];
   activeGenerationPeerIds: string[] | null;
   stats: roster.ClusterStats;
 };
