@@ -196,6 +196,33 @@ describe("status() のスナップショット(#58)", () => {
     expect(co.status()).toEqual(before);
   });
 
+  test("activeGenerationPeerIds を書き換えても内部状態に影響しない(コピーを返す)", () => {
+    const co = new Coordinator();
+    co.hello("req", "requester", "Req", fakeSocket());
+    co.hello("p1", "peer", "P1", fakeSocket());
+    co.peerStatus("p1", "ready");
+
+    const ids = co.status().activeGenerationPeerIds;
+    expect(ids).toEqual(["p1"]);
+    ids?.push("よそから足したID");
+    expect(co.status().activeGenerationPeerIds).toEqual(["p1"]);
+  });
+
+  test("書き換えた配列で再編成の判定が狂わない(#34の回帰)", () => {
+    const co = new Coordinator();
+    co.hello("req", "requester", "Req", fakeSocket());
+    co.hello("p1", "peer", "P1", fakeSocket());
+    co.peerStatus("p1", "ready"); // gen 1
+
+    // 内部を書き換えられると p2 が「加入済み」に見え、再編成が起きなくなる
+    co.status().activeGenerationPeerIds?.push("p2");
+
+    co.hello("p2", "peer", "P2", fakeSocket());
+    co.peerStatus("p2", "ready");
+    expect(co.status().generation).toBe(2); // 再編成されている
+    expect(co.status().activeGenerationPeerIds?.sort()).toEqual(["p1", "p2"]);
+  });
+
   test("statsを書き換えても内部状態に影響しない(コピーを返す)", () => {
     const co = new Coordinator();
     co.hello("p1", "peer", "P1", fakeSocket());

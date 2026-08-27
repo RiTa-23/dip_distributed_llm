@@ -57,7 +57,12 @@ export class Coordinator {
       acceptingGrowth: this.state.acceptingGrowth,
       requesterConnected,
       peers: roster.currentRoster(this.state),
-      activeGenerationPeerIds: this.state.activeGenerationPeerIds,
+      // 内部の配列をそのまま渡さない。呼び出し側で書き換えられると、これを見て
+      // 「新規加入かどうか」を判断している再編成の判定(#34)が狂う
+      activeGenerationPeerIds:
+        this.state.activeGenerationPeerIds === null
+          ? null
+          : [...this.state.activeGenerationPeerIds],
       stats: { ...this.state.stats },
     };
   }
