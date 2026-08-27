@@ -235,8 +235,12 @@ PUBLIC_ORIGIN=https://llm.example.com:8443
 
 あとは `bun run --cwd apps/server dev`。
 
-> **`bun run setup` は必ず通すこと。** 証明書なし(HTTP)で起動すると、
-> `PUBLIC_ORIGIN` が `https://` と食い違って無視される(「参加者に配るURLの決まり方」を参照)。
+> **`bun run setup` は必ず通すこと。** 証明書が無いとHonoは **HTTPの3000番**で起動する
+> (「証明書の選ばれ方」を参照)。下のCaddyの例は `https://...:8443` へ転送するので、
+> **接続できず 502 になる。**
+>
+> 仮にポートを合わせても、`PUBLIC_ORIGIN` の `https://` と配信中の `http` が食い違って
+> 無視されるため、QRがLAN IPのままになる(「参加者に配るURLの決まり方」を参照)。
 
 ### ホスト役がやること
 
@@ -267,11 +271,38 @@ caddy run --config Caddyfile
 ```
 
 - `transport http { ... }` は**必ず複数行で書く。** 1行にまとめるとCaddyが構文エラーにする
-- `tls_insecure_skip_verify` … 転送先がmkcertなので検証を省く。LAN内なので許容する
+- `tls_insecure_skip_verify` … **転送先の証明書を検証しない指定。**
+  同一LAN内の開発用途として許容している(後述)
 - 転送先は **`<ホスト名>.local` を推奨**。相手のIPが変わっても追随する(macOSは自動で名乗る)
 - WebSocketの `Upgrade` はCaddyが自動で通す(v2は設定不要)
 
 担当が変わったら転送先を書き換えて `caddy reload`。
+
+#### `tls_insecure_skip_verify` について
+
+転送先(メンバーのHono)はmkcertの証明書で動くため、そのままでは検証できない。
+厳密に検証する構成にもできるが、次の2つが要る。
+
+```caddyfile
+	reverse_proxy https://member-pc.local:8443 {
+		transport http {
+			tls_trust_pool file "/path/to/そのメンバーの/rootCA.pem"
+			tls_server_name localhost
+		}
+	}
+```
+
+- **`tls_trust_pool` に渡すrootCAは、メンバーごとに違う。** mkcertのCAは端末ごとに
+  生成されるので(`mkcert -CAROOT`)、**人数分コピーしてもらう**必要がある
+- **パスは引用符で囲む。** macOSの `mkcert -CAROOT` は
+  `~/Library/Application Support/mkcert` で**空白を含む**ため、
+  囲まないとCaddyが途中で切って `no such file or directory` になる
+- **`tls_server_name` は相手の証明書のSANに入っている名前にする。**
+  mkcertは `.local` 名をSANに入れない(`DNS:localhost` とIPのみ)ので、
+  `.local` で転送しているなら `localhost` を指定することになる
+
+**手間に見合うかで判断してよい。** この経路は開発中だけのもので、
+デモ本番の参加者⇄Honoはこのプロキシを通らない。
 
 **ホスト役自身が立てるときはCaddyを使わない。** 止めていつも通り `bun run dev` すれば、
 ポートの取り合いも起きず今まで通り動く。
