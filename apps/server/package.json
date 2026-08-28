@@ -4,6 +4,7 @@
     "dev": "bun run --hot src/index.ts",
     "cert": "bun scripts/gen-cert.ts",
     "dns": "bun scripts/update-dns.ts",
+    "venue": "bun scripts/venue.ts",
     "dummy-model": "bun scripts/gen-dummy-model.ts",
     "web:copy": "bun run --cwd ../web build && bun scripts/copy-web-dist.ts",
     "setup": "bun run cert && bun run web:copy",
