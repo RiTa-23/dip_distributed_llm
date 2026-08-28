@@ -19,7 +19,7 @@
 - [ ] 発表者PCを会場Wi-Fiに接続
 - [ ] 参加者用の端末(スマホ)も同じWi-Fiに接続
 
-## 2. Aレコードを今のLAN IPに更新
+## 2. 今のLAN IPに全部を追随させる
 
 ```bash
 cd apps/server
@@ -32,11 +32,19 @@ export CF_API_TOKEN
 export CF_ZONE_ID=...          # ゾーン概要ページの値
 export CF_RECORD_NAME=llm.example.com
 
-bun run dns
+bun run venue
 ```
 
+`venue` は Aレコード・`turnserver.conf`・`apps/web/.env.local`・**Webのビルド**をまとめて今のIPに揃える。IPが変わると4つ全部がズレるので、手で回さない。
+
 - [ ] `更新しました: ... → 10.x.x.x` が出た
-- [ ] 検出されたIPが会場Wi-Fiのものと合っている(違えば `bun run dns 10.0.5.22` と直接指定)
+- [ ] 検出されたIPが会場Wi-Fiのものと合っている(違えば `bun run venue 10.0.5.22` と直接指定)
+- [ ] `配信物に turn:10.x.x.x:3478 が焼き込まれています` が出た(TURNを使う場合)
+
+> **coturnが動いていないと `[4/5]` がスキップされる。** その場合は先に起動してから `venue` をもう一度:
+> `nohup turnserver -c /opt/homebrew/etc/turnserver.conf > /tmp/coturn.log 2>&1 &`
+>
+> Aレコードだけ直したいときは `bun run dns` が従来どおり使える。
 
 ## 3. 名前解決を確認 ← **ここが関門**
 
@@ -116,7 +124,10 @@ APアイソレーションだと参加者端末から発表者PCへ一切届か�
 
 ### 途中でLAN IPが変わった
 
-DHCPのリース更新で変わることがある。`bun run dns` をもう一度叩けばよい。
+DHCPのリース更新で変わることがある。**`bun run venue` をもう一度叩く。**
+Aレコードだけでなく TURN の待受と焼き込み済みのURLも古いIPのままになるため、
+`bun run dns` だけでは足りない。
+
 既に参加している人は繋ぎ直しが要る。
 
 ---

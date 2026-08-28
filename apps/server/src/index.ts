@@ -139,6 +139,13 @@ app.get(
               if (state.pending) {
                 // 前回のpingにpongが返っていない。応答が途絶えたとみなして閉じる。
                 // close すると onClose が走り、ロスターからも外れる(#55)
+                //
+                // **理由をログに残す。** これが無いと onClose の記録しか残らず、
+                // 「メンバーがタブを閉じた」のか「ブラウザが応答不能になった」のかを
+                // 後から区別できない。再編成の原因を追うときにこの差が効く。
+                console.log(
+                  `[${new Date().toISOString()}] no_pong clientId=${clientId ?? "(hello前)"}`,
+                );
                 sock.close(1001, "no pong");
                 return;
               }
@@ -186,6 +193,9 @@ app.get(
         }
       },
       onClose() {
+        // 切断は必ず1行残す。直前に no_pong が出ていれば応答途絶、出ていなければ
+        // タブを閉じた・リロード・回線断のいずれか、と読み分けられる
+        console.log(`[${new Date().toISOString()}] ws_close clientId=${clientId ?? "(hello前)"}`);
         if (clientId && socket) coordinator.disconnect(clientId, socket);
       },
     };
