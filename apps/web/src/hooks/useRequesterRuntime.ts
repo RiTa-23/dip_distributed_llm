@@ -43,6 +43,11 @@ export type UseRequesterRuntimeOptions = {
   peerIds: string[];
   model: ModelSource;
   /**
+   * llama.cppへ渡す追加のフラグ。`-c`(n_ctx)など。**フラグ以外を入れないこと。**
+   * 起動時に一度だけ読むので、途中で変えてもその世代には効かない。
+   */
+  args?: string[];
+  /**
    * `model` が確定したか(#65)。`useModelInfo` の `/model-info` 取得が終わるまでは
    * フォールバック値の可能性がある。Runtimeはこれを**待ってから起動**しないと、
    * 仮置きモデル名で立ち上がって後から乖離する(CodeRabbit #101)。
@@ -138,6 +143,7 @@ export function useRequesterRuntime(options: UseRequesterRuntimeOptions): UseReq
       manager,
       peerIds: [...latest.current.peerIds],
       model: latest.current.model,
+      args: latest.current.args ? [...latest.current.args] : undefined,
       // 古い世代のRuntimeが遅れて吐いたぶんを、現行世代の画面へ流さない
       onText: mine.guard((delta: string) => latest.current.onText(delta)),
       onLog: mine.guard((line: string) => latest.current.onLog?.(line)),

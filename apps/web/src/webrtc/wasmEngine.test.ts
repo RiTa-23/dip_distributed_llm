@@ -119,6 +119,20 @@ describe("startPeerRuntime", () => {
     expect(logger.lines.some((l) => l.includes("startPeer()"))).toBe(true);
   });
 
+  test("CPU peer指定をRuntimeへ渡す", async () => {
+    const recorded: Recorded = { options: {}, stopped: 0 };
+    const box = startPeerRuntime({
+      manager: createManager(),
+      moduleUrl: URL_STUB,
+      importModule: () => Promise.resolve(createModule(recorded)),
+      disableWebGPU: true,
+      logger: createLogger(),
+    });
+
+    await box.started;
+    expect(recorded.options.disableWebGPU).toBe(true);
+  });
+
   test("読み込みに失敗したら started が reject する。準備完了にはならない", async () => {
     const box = startPeerRuntime({
       manager: createManager(),
@@ -187,6 +201,7 @@ describe("startRequesterRuntime", () => {
       importModule: () => Promise.resolve(createModule(recorded)),
       peerIds: ["peer-b", "peer-a", "peer-c"],
       model: { kind: "url", url: "/models/x.gguf" },
+      args: ["-c", "2048"],
       onText: (delta) => deltas.push(delta),
       logger: createLogger(),
     });
@@ -195,10 +210,30 @@ describe("startRequesterRuntime", () => {
     // 並びがRPC deviceの登録順になる。ソートも重複排除もしない
     expect(recorded.options.peerIds).toEqual(["peer-b", "peer-a", "peer-c"]);
     expect(recorded.options.model).toEqual({ kind: "url", url: "/models/x.gguf" });
+    expect(recorded.options.args).toEqual(["-c", "2048"]);
 
     const onText = recorded.options.onText as (delta: string) => void;
     onText("あ");
     expect(deltas).toEqual(["あ"]);
+  });
+
+  test("local GGUF Fileをそのまま渡す", async () => {
+    const recorded: Recorded = { options: {}, stopped: 0 };
+    const file = new File(["gguf"], "Qwen3.6-35B-A3B.Q2_K.gguf");
+    const box = startRequesterRuntime({
+      manager: createManager(),
+      moduleUrl: URL_STUB,
+      importModule: () => Promise.resolve(createModule(recorded)),
+      peerIds: ["peer-a"],
+      model: { kind: "file", file },
+      args: ["-c", "2048"],
+      onText: () => undefined,
+      logger: createLogger(),
+    });
+
+    await box.started;
+    expect(recorded.options.model).toEqual({ kind: "file", file });
+    expect(recorded.options.args).toEqual(["-c", "2048"]);
   });
 
   test("関数が見つからなければ reject する", async () => {
