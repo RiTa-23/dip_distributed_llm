@@ -133,3 +133,16 @@ describe("model_changed(モデル差し替えによる組み直し)", () => {
     }
   });
 });
+
+describe("dismiss_peers(参加ピアの一括解除 #114)", () => {
+  test("フィールドが無くても通す", () => {
+    expect(parseClientMessage({ type: "dismiss_peers" })).toEqual({ type: "dismiss_peers" });
+  });
+
+  test("余分なフィールドは落として通す", () => {
+    // 契約に無い値をそのまま roster へ渡さない
+    expect(parseClientMessage({ type: "dismiss_peers", generation: 3 })).toEqual({
+      type: "dismiss_peers",
+    });
+  });
+});

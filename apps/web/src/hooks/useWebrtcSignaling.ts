@@ -215,6 +215,14 @@ export function useWebrtcSignaling(options: WebrtcSignalingOptions): WebrtcSigna
         sessionRef.current?.accept(lastMessage);
         return;
 
+      case "peers_dismissed":
+        // 編成そのものが取り消された(#114)。世代の判定は要らない — 発表者が
+        // 「今の全員を降ろす」と明示した結果なので、遅れて届くことがない。
+        // 繋いでいなければ畳むものがないので、そのまま抜ける
+        if (!sessionRef.current) return;
+        teardown();
+        return;
+
       case "roster_update":
         // 人の増減はフェーズにもWebRTCにも効かない。編成は generation_start で組み直す
         return;

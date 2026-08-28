@@ -2,6 +2,7 @@ import type {
   GenerationAbortedMessage,
   GenerationStartMessage,
   PeerInfo,
+  PeersDismissedMessage,
   PeerStatus,
   RosterUpdateMessage,
   ServerMessage,
@@ -73,6 +74,11 @@ function toGenerationAborted(v: JsonObject): GenerationAbortedMessage | null {
   };
 }
 
+function toPeersDismissed(v: JsonObject): PeersDismissedMessage | null {
+  if (!isString(v.message)) return null;
+  return { type: "peers_dismissed", message: v.message };
+}
+
 function toWebrtcSignal(v: JsonObject): WebrtcSignalMessage | null {
   if (!isString(v.targetId) || !isString(v.fromId)) return null;
   if (!isObject(v.payload) || !isMember(SIGNAL_KINDS, v.payload.kind)) return null;
@@ -116,6 +122,8 @@ export function parseServerMessage(raw: unknown): ServerMessage | null {
       return toGenerationStart(json);
     case "generation_aborted":
       return toGenerationAborted(json);
+    case "peers_dismissed":
+      return toPeersDismissed(json);
     case "webrtc_signal":
       return toWebrtcSignal(json);
     default:

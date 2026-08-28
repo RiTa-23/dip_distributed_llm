@@ -111,6 +111,11 @@ export class Coordinator {
     this.run(roster.applyModelChanged(this.state, clientId, generation));
   }
 
+  /** 参加ピアの一括解除。requester かどうかは roster 側で見る(#114) */
+  dismissPeers(clientId: string): void {
+    this.run(roster.applyDismissPeers(this.state, clientId));
+  }
+
   signal(clientId: string, msg: WebrtcSignalMessage): void {
     this.run(roster.applySignal(this.state, clientId, msg));
   }
@@ -151,6 +156,10 @@ export class Coordinator {
         break;
       case "generation_aborted":
         this.log(`[${at}] generation_aborted gen=${m.generation} reason=${m.reason}`);
+        break;
+      case "peers_dismissed":
+        // 直後の roster_update が0人になる理由がこれ。並べて読めるように出す(#114)
+        this.log(`[${at}] peers_dismissed`);
         break;
       default:
         break;

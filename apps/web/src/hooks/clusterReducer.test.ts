@@ -170,3 +170,44 @@ describe("clusterReducer のエラー", () => {
     expect(clusterReducer(failed, { type: "socket_opened" }).errorMessage).toBeNull();
   });
 });
+
+describe("peers_dismissed による全員解除(#114)", () => {
+  const dismissed = {
+    type: "server",
+    msg: { type: "peers_dismissed", message: "発表者が編成を解除しました" },
+  } as const satisfies ClusterAction;
+
+  test("発表者は待機に戻り、ロスターと編成を手放す", () => {
+    const asRequester: ClusterState = {
+      ...initialClusterState,
+      myId: "c-req",
+      role: "requester",
+    };
+    const active = run(
+      [
+        { type: "socket_opened" },
+        { type: "local_ready" },
+        { type: "server", msg: start(1, ["c-1"]) },
+        { type: "datachannel_open" },
+      ],
+      asRequester,
+    );
+    expect(active.phase).toBe("active");
+
+    const after = clusterReducer(active, dismissed);
+    expect(after.phase).toBe("waiting");
+    expect(after.roster).toEqual([]);
+    expect(after.generationPeerIds).toEqual([]);
+  });
+
+  test("発表者を reorganizing にはしない", () => {
+    // 次の generation_start は誰かが参加し直すまで来ない。「まもなく再開します」は嘘になる
+    const asRequester: ClusterState = { ...initialClusterState, role: "requester" };
+    expect(clusterReducer(asRequester, dismissed).phase).not.toBe("reorganizing");
+  });
+
+  test("参加者側では状態を動かさない(離脱は PeerView が行う)", () => {
+    // ここで idle に落とすと、離脱が反映される前の1描画で参加前の画面が出る
+    expect(clusterReducer(running, dismissed)).toBe(running);
+  });
+});

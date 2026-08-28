@@ -2,6 +2,7 @@ import type {
   GenerationAbortedMessage,
   GenerationStartMessage,
   PeerInfo,
+  PeersDismissedMessage,
   PeerStatus,
   Role,
   RosterUpdateMessage,
@@ -350,6 +351,54 @@ export function applyModelChanged(
   };
   state.phase = "idle";
   return [{ kind: "broadcast", msg: aborted }, ...maybeStartGeneration(state)];
+}
+
+/**
+ * dismiss_peers: requesterがいま参加している全peerを編成から降ろす(#114)。
+ *
+ * 発表者から参加者を降ろす手段が「本人が離脱する」「WebSocketが切れる」しかなく、
+ * 席を離れた参加者やエラーで固まった端末が編成に残り続けても外せなかった。
+ *
+ * **`applyDisconnect` を人数分呼ぶのでは済まない。** あちらは
+ * `generation_aborted` を出すだけで、受け取った側は次の `generation_start` を
+ * 待ち続ける。加えてフロントは切断を自動で繋ぎ直す(`hooks/useHonoSocket.ts`)ため、
+ * WebSocketを閉じても数秒で hello から入り直してくる。降ろしたことを伝える
+ * `peers_dismissed` を出して、参加者側に参加前へ戻ってもらう必要がある。
+ *
+ * `stats` / `seenPeerIds` はリセットしない。あれは「これまで」を持つ役目で、
+ * 現在のロスターとは別物のため(#60)。
+ */
+export function applyDismissPeers(state: ClusterState, clientId: string): Effect[] {
+  const c = state.clients.get(clientId);
+  if (!c || c.role !== "requester") return []; // requester以外からの送信は無視
+
+  const peerIds: string[] = [];
+  for (const [id, client] of state.clients) {
+    if (client.role === "peer") peerIds.push(id);
+  }
+  if (peerIds.length === 0) return []; // 降ろす相手がいない。空打ちで配信しない
+
+  for (const id of peerIds) state.clients.delete(id);
+
+  // 編成の前提が丸ごと消えたので、世代まわりの持ち物も畳む。`failedPeerIds` を
+  // 残すと、解除前の顔ぶれが戻ってきたときに「同じ編成の即時リトライ」と
+  // 誤判定されて次の世代が始まらない
+  state.phase = "idle";
+  state.activeGenerationPeerIds = null;
+  state.failedPeerIds = null;
+
+  const dismissed: PeersDismissedMessage = {
+    type: "peers_dismissed",
+    message: "発表者が編成を解除しました",
+  };
+  // 解除の理由を先に届けてからロスターを空にする。逆にすると、参加者側は
+  // 理由の分からないまま0人のロスターを1描画ぶん見ることになる
+  return [
+    { kind: "broadcast", msg: dismissed },
+    { kind: "broadcast", msg: rosterUpdate(state) },
+  ];
+  // `maybeStartGeneration` は呼ばない。peerが0人なので何も起きないが、
+  // 「解除の直後に組み直さない」ことを意図として残す
 }
 
 /**

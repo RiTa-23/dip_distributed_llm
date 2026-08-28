@@ -104,6 +104,15 @@ export function useHonoSocketMock({ enabled }: SocketOptions): HonoSocket {
 
   const send = useCallback(
     (msg: ClientMessage) => {
+      // 全員解除(#114)。本物のHonoと同じく peers_dismissed → 空の roster_update の順。
+      // ここを繋がないと、モックだけで開発しているときボタンが無反応になる
+      if (msg.type === "dismiss_peers") {
+        if (peers.current.length === 0) return;
+        peers.current = [];
+        emit({ type: "peers_dismissed", message: "発表者が編成を解除しました" });
+        emitRoster();
+        return;
+      }
       if (msg.type !== "hello") return;
       const self: PeerInfo[] =
         msg.role === "peer"
@@ -114,7 +123,7 @@ export function useHonoSocketMock({ enabled }: SocketOptions): HonoSocket {
       // 待機中が一瞬で消えないよう、編成が組まれるまで少し間を置く
       timers.current.push(window.setTimeout(startGeneration, 4200));
     },
-    [emitRoster, startGeneration],
+    [emit, emitRoster, startGeneration],
   );
 
   const addPeer = useCallback(

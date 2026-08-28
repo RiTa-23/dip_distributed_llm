@@ -60,13 +60,23 @@ export type ModelChangedMessage = {
   generation: number;
 };
 
+export type DismissPeersMessage = {
+  // requesterのみ送信可。いま参加している全peerを編成から降ろす。
+  //
+  // サーバがWebSocketを閉じるだけでは足りない。フロントの自動再接続
+  // (`hooks/useHonoSocket.ts`)が250ms〜4秒でつなぎ直し、hello → ready で
+  // すぐに組み直されるため、「解除された」を伝える下の `peers_dismissed` が要る。
+  type: "dismiss_peers";
+};
+
 export type ClientMessage =
   | HelloMessage
   | PeerStatusMessage
   | WebrtcSignalMessage
   | RequesterAcceptingMessage
   | GenerationFailedMessage
-  | ModelChangedMessage;
+  | ModelChangedMessage
+  | DismissPeersMessage;
 
 // ---------- サーバ → クライアント ----------
 export type RosterUpdateMessage = {
@@ -92,9 +102,23 @@ export type GenerationAbortedMessage = {
   message: string;
 };
 
+export type PeersDismissedMessage = {
+  // requesterの `dismiss_peers` を受けて、Honoが全peerを降ろしたことを知らせる。
+  // 宛先は全員(broadcast)で、受け取り方が役割ごとに違う。
+  //   peer      … 参加前の画面へ戻る。自動では戻ってこない(参加し直しは本人の操作)
+  //   requester … WebRTCを畳んで待機に戻る
+  //
+  // `generation_aborted` を流用しない。あちらは「編成が壊れた/組み直す」通知で、
+  // 受けた側は次の `generation_start` を待ち続ける。解除は編成そのものの取り消しで、
+  // 待っても次は来ない。
+  type: "peers_dismissed";
+  message: string;
+};
+
 // webrtc_signalはサーバ→クライアントにも使われる(取り次が結果として)ので両方に含める
 export type ServerMessage =
   | RosterUpdateMessage
   | GenerationStartMessage
   | GenerationAbortedMessage
+  | PeersDismissedMessage
   | WebrtcSignalMessage;

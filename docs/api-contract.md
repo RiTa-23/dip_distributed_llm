@@ -88,6 +88,27 @@ requesterがモデルを載せ替えたので、**同じ顔ぶれのまま**編�
 - 推論中(`generating`)でも受け付ける。走っている生成は中断されるが、requesterの明示的な操作の結果であり事故ではない
 - 画面側は「選ぶ」と「載せる」を分けている。選んだだけでは送らず、**適用を押したときだけ**送る(誤クリックで参加者を巻き込まないため)
 
+### 10. `dismiss_peers` (client → server, requesterのみ)
+いま参加している**全peerを編成から降ろす**。発表者が編成を白紙に戻すための操作。
+```json
+{ "type": "dismiss_peers" }
+```
+- フィールドを持たない。Honoは送信者が`requester`であることだけを検証し、それ以外からの送信は無視する
+- `phase`は問わない(`idle`でも`active`でも受け付ける)。peerが0人のときは何も配信しない
+- 受理すると全peerをロスターから削除し、`peers_dismissed`→空の`roster_update`の順で全員に配信して`idle`へ戻す。`activeGenerationPeerIds`と`failedPeerIds`も畳む
+- **続けて`generation_start`は出さない**(peerが0人なので組める編成が無い)。`generation`番号はリセットせず、誰かが参加し直せば続きの番号から始まる
+- 累計の統計(`/status`の`stats`)はリセットしない。あれは「これまで」を数えるもので、現在のロスターとは別物
+
+### 11. `peers_dismissed` (server → 全client, broadcast)
+`dismiss_peers`を受けて全peerを降ろしたことを知らせる。
+```json
+{ "type": "peers_dismissed", "message": "発表者が編成を解除しました" }
+```
+- 受け取り方は役割ごとに違う。peerは参加前の画面へ戻り(**自動では参加し直さない**)、requesterはWebRTCを畳んで待機に戻る
+- ⚠️ **`generation_aborted`を流用してはいけない。** あちらは「編成が壊れた/組み直す」通知で、受けた側は次の`generation_start`を待ち続ける。解除は編成そのものの取り消しで、誰かが参加し直すまで次は来ない
+- ⚠️ **サーバがWebSocketを閉じるだけでは解除にならない。** フロントは切断を自動で繋ぎ直すので(`hooks/useHonoSocket.ts`、250ms〜4秒)、数秒後に`hello`から入り直して同じ顔ぶれが組まれる。降ろしたことを明示的に伝える必要があるのはこのため
+- `generation`を載せない。発表者の明示的な操作の結果であり、遅れて届いて古い編成を巻き込むことがないため
+
 ## 世代開始の条件
 
 Honoが`generation_start`を出すのは、次をすべて満たすときだけ。
