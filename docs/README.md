@@ -2,6 +2,7 @@
 
 | ファイル | 内容 |
 |---|---|
+| [present.md](./present.md) | 発表用のプロジェクト紹介 |
 | [requirements.md](./requirements.md) | 要件定義・アーキテクチャ・課題点 |
 | [role-assignment.md](./role-assignment.md) | 役割分担 |
 | [directory-structure.md](./directory-structure.md) | ディレクトリ構成とその理由 |
