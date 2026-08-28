@@ -38,8 +38,11 @@ export function useModelInfo(): UseModelInfo {
         if (parsed) setModel(parsed);
         setSettled(true);
       })
-      .catch(() => {
-        // 取得できなくても既定値で成立するので握りつぶす
+      .catch((err) => {
+        // abortはStrictModeの初回effectの後片付けによるもの。まだ2回目の取得が続くので
+        // `settled` を確定してはならない(確定するとフォールバックでRuntimeが起動してしまう #101)。
+        // それ以外のエラーは取得不能なのでフォールバック値で settled にする
+        if (err instanceof DOMException && err.name === "AbortError") return;
         setSettled(true);
       });
     return () => controller.abort();
