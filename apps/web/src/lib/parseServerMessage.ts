@@ -15,6 +15,7 @@ const ABORT_REASONS = [
   "peer_disconnected",
   "peer_joined",
   "connection_failed",
+  "model_changed",
 ] as const satisfies readonly GenerationAbortedMessage["reason"][];
 
 type JsonObject = Record<string, unknown>;
