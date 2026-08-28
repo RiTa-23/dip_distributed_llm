@@ -24,12 +24,8 @@ function nextWait(retry: number): number {
   return base * (1 - JITTER + Math.random() * JITTER * 2);
 }
 
-/**
- * 受信を1件ずつ流す間隔。0でも1タスクずつに分かれる。
- * 同じtickで setLastMessage を2回呼ぶと後の1件しか残らず、
- * roster_update と generation_aborted が続けて届いたときに前者が消える。
- */
-const FRAME_MS = 0;
+// 受信は1件ずつ流す。`lastMessage` は1枠しかないので、描画される前に次を入れると
+// 間の1件が誰にも観測されないまま消える(下の「次を流すのは commit のあと」を参照)。
 
 /**
  * Honoの制御プレーン(`/ws`)への接続。
@@ -42,35 +38,44 @@ export function useHonoSocket({ enabled }: SocketOptions): HonoSocket {
   const [connected, setConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState<ServerMessage | null>(null);
   const socket = useRef<WebSocket | null>(null);
-  /** 受信の順番待ち。FRAME_MSごとに1件ずつ setLastMessage する */
+  /** 受信の順番待ち。1件ずつ setLastMessage する */
   const queue = useRef<ServerMessage[]>([]);
-  /** 流している最中の1件だけを持つ。溜めると接続が長いほど増え続ける */
-  const flushTimer = useRef<number | null>(null);
+  /** 流している最中かどうか。true のあいだ、次の1件は commit を待って出る */
+  const flushing = useRef(false);
   /** まだ接続中(CONNECTING)のあいだに send された分。openで一度に流す */
   const outbox = useRef<string[]>([]);
 
   const clearQueue = useCallback(() => {
-    if (flushTimer.current !== null) {
-      clearTimeout(flushTimer.current);
-      flushTimer.current = null;
-    }
     queue.current = [];
+    flushing.current = false;
   }, []);
 
   const emit = useCallback((msg: ServerMessage) => {
     queue.current.push(msg);
-    if (flushTimer.current !== null) return;
-    const step = () => {
-      const next = queue.current.shift();
-      if (!next) {
-        flushTimer.current = null;
-        return;
-      }
-      setLastMessage(next);
-      flushTimer.current = window.setTimeout(step, FRAME_MS);
-    };
-    step();
+    if (flushing.current) return; // 流している最中。下の効果が続きを出す
+    flushing.current = true;
+    const next = queue.current.shift();
+    if (next) setLastMessage(next);
   }, []);
+
+  /**
+   * 次の1件を流すのは、直前の1件が commit されたあと(#114)。
+   *
+   * 以前は `setTimeout(step, 0)` で刻んでいたが、**タスクを分けるだけでは足りない**。
+   * Reactの描画自体もタスクなので、`setTimeout` が先に走ると commit の前に
+   * `lastMessage` が上書きされ、間の1件は誰の効果からも観測されないまま消える。
+   * 描画のたびに1件ずつ進めれば、この取りこぼしは原理的に起きない。
+   *
+   * 実害の例(#114の実機で判明): `peers_dismissed` の直後に `roster_update` が届くと、
+   * 参加者画面が解除に気づかず「貢献中」のまま取り残された。
+   * `generation_aborted` → `generation_start` にも同じ穴があった。
+   */
+  useEffect(() => {
+    if (!flushing.current) return;
+    const next = queue.current.shift();
+    if (next) setLastMessage(next);
+    else flushing.current = false;
+  }, [lastMessage]);
 
   const send = useCallback((msg: ClientMessage) => {
     const text = JSON.stringify(msg);

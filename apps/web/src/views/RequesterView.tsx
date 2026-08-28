@@ -303,8 +303,10 @@ export function RequesterView() {
    * 0人になったりしたら、押した時点の顔ぶれに対する確認ではなくなるので落とす
    * (ボタンは disabled になり、「もう一度押すと解除」の表示だけが残ってしまう)
    */
-  const rosterKey = state.roster.map((p) => p.clientId).join(",");
-  const dismissArmedNow = dismissArmed && dismissArmedFor === rosterKey && rosterKey !== "";
+  // 区切り文字で繋がない。`clientId` は任意の文字列を取りうる契約なので、
+  // 区切りが値に混ざると別の顔ぶれが同じ鍵になり、確認が無効化されない
+  const rosterKey = JSON.stringify(state.roster.map((p) => p.clientId));
+  const dismissArmedNow = dismissArmed && dismissArmedFor === rosterKey && state.roster.length > 0;
 
   /**
    * 参加ピアを全員降ろす(#114)。1回目の押下では実行せず、armed にして待つ。
