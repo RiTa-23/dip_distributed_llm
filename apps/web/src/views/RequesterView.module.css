@@ -17,6 +17,12 @@
   display: flex;
   flex-direction: column;
   gap: 20px;
+  /* 会話が長くなってページが縦に伸びても、サイドバーを画面上部に張り付かせる(#104)。
+     グリッドのalign-selfは既定でstretchなので、そのままだと高さが行いっぱいになり
+     stickyが動く余地がなくて効かない。startへ倒して初めて追従する。 */
+  align-self: start;
+  position: sticky;
+  top: 0;
 }
 
 .sectionLabel {

@@ -57,6 +57,11 @@ winget install FiloSottile.mkcert
 
 詳しくは [apps/server/README.md](./apps/server/README.md) を参照。
 
+### リポジトリのclone
+任意のディレクトリ（普段使ってる開発フォルダ等）に以下のコマンドでclone
+```bash
+git clone https://github.com/RiTa-23/dip_distributed_llm.git
+```
 ### インストール
 
 ```bash
