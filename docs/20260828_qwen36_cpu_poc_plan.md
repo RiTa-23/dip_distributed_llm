@@ -19,7 +19,7 @@
 
 - [ ] 追加テストをRED→実装後GREENで確認する。
 - [ ] Web typecheck / test / build / lint / formatを実行する。
-- [ ] dense小型modelのB-1を同一環境で1 prompt確認する。
+- [x] dense小型modelのB-1を同一環境で1 prompt確認する（最新artifact / WebGPU peer / 1 prompt完走）。
 - [ ] adapter情報とRuntime `adapter_info` を記録する。
 - [ ] CPU peer 4 instance程度でQwen3.6のloadを試し、必要なら5、6へ増やす。
 - [ ] load後に短いpromptをEOSまで1回生成する。
