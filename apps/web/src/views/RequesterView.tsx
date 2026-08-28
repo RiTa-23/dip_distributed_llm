@@ -13,7 +13,7 @@ import { createGenerationOwner } from "../webrtc/generationOwner";
 import type { GenerationToken } from "../webrtc/generationOwner";
 import { createAcceptingSignal } from "../hooks/requesterAccepting";
 import { getClientId } from "../lib/clientId";
-import { CONNECT_STALL_MS, MODEL_NAME, TOTAL_LAYERS } from "../config";
+import { CONNECT_STALL_MS } from "../config";
 import type { Phase } from "../types/cluster";
 import styles from "./RequesterView.module.css";
 
@@ -66,7 +66,7 @@ type GenerationWindow = { token: GenerationToken; text: string };
 export function RequesterView() {
   // useCluster が初期状態に取り込むので、先に決めておく
   const [myId] = useState(() => getClientId("requester"));
-  const { state, dispatch, send, lastMessage, assignments, debug } = useCluster({
+  const { state, dispatch, send, lastMessage, assignments, debug, model } = useCluster({
     enabled: true,
     myId,
     role: "requester",
@@ -183,7 +183,7 @@ export function RequesterView() {
     generation: rtc.generation,
     allOpen,
     peerIds: rtc.expectedIds,
-    model: { kind: "url", url: `/models/${MODEL_NAME}` },
+    model: { kind: "url", url: `/models/${model.name}` },
     onText: (delta) => {
       const open = windowRef.current;
       // 窓が開いていない = 起動時のstdout。持ち主でない = 前の世代の窓が残っているだけ
@@ -365,7 +365,7 @@ export function RequesterView() {
         left={
           <>
             第{state.generation}世代 · 接続 {state.roster.length}人 ·{" "}
-            <span className={styles.mono}>{MODEL_NAME}</span>
+            <span className={styles.mono}>{model.name}</span>
           </>
         }
         right={
@@ -427,7 +427,7 @@ export function RequesterView() {
           <div>
             <div className={styles.sectionLabel}>全体</div>
             <LayerBar
-              totalLayers={TOTAL_LAYERS}
+              totalLayers={model.totalLayers}
               assignments={assignments}
               roster={state.roster}
               computingClientId={computingClientId}

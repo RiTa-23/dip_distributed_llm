@@ -2,10 +2,12 @@ import { useEffect, useMemo, useReducer } from "react";
 import { clusterReducer } from "./clusterReducer";
 import { useHonoSocketMock } from "./useHonoSocket.mock";
 import { useHonoSocket } from "./useHonoSocket";
+import { useModelInfo } from "./useModelInfo";
 import { initialClusterState } from "../types/cluster";
 import type { LayerAssignment } from "../types/cluster";
 import { deriveAssignments } from "../lib/assignments";
-import { TOTAL_LAYERS, USE_MOCK_SOCKET } from "../config";
+import type { ModelInfo } from "../lib/modelInfo";
+import { USE_MOCK_SOCKET } from "../config";
 import type { SocketDebug } from "../types/socket";
 import type { ClusterAction } from "./clusterReducer";
 import type { ClusterState } from "../types/cluster";
@@ -30,6 +32,8 @@ export type Cluster = {
   lastMessage: ServerMessage | null;
   assignments: LayerAssignment[];
   debug: SocketDebug | null;
+  /** モデル名・総層数(サーバ由来。#65)。取得失敗時はconfig.tsのフォールバック値 */
+  model: ModelInfo;
 };
 
 /**
@@ -46,6 +50,8 @@ export function useCluster(options: { enabled: boolean; myId: string; role: Role
     role: o.role,
   }));
   const { connected, lastMessage, send, debug } = useSocket(options);
+  // モデル名・総層数はサーバが配る(#65)。層バーの総数と仮の割り当てに使う
+  const model = useModelInfo();
 
   useEffect(() => {
     dispatch(connected ? { type: "socket_opened" } : { type: "socket_closed" });
@@ -73,9 +79,9 @@ export function useCluster(options: { enabled: boolean; myId: string; role: Role
 
   // 表示用の仮の割り当て。本物は①の getLayerAssignment() から来る
   const assignments = useMemo(
-    () => deriveAssignments(generationPeers, TOTAL_LAYERS),
-    [generationPeers],
+    () => deriveAssignments(generationPeers, model.totalLayers),
+    [generationPeers, model.totalLayers],
   );
 
-  return { state, dispatch, send, lastMessage, assignments, debug };
+  return { state, dispatch, send, lastMessage, assignments, debug, model };
 }
