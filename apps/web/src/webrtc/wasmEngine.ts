@@ -112,6 +112,14 @@ export type StartPeerOptions = {
   onLog?: (line: string) => void;
   onError?: (error: unknown) => void;
   logger?: EngineLogger;
+  /**
+   * peerをCPUバックエンドで動かす(Runtime側で `-device cpu` になる)。
+   *
+   * MoEモデルはWebGPU peerだと first token に到達しない(Runtime側のO11)。同じモデルが
+   * CPU peerなら完走するので、MoEを載せるあいだはこちらを立てる。dense modelでは
+   * 指定しない。
+   */
+  disableWebGPU?: boolean;
 };
 
 export type StartRequesterOptions = StartPeerOptions & {
@@ -122,6 +130,21 @@ export type StartRequesterOptions = StartPeerOptions & {
   peerIds: string[];
   model: ModelSource;
   onText?: (delta: string) => void;
+  /**
+   * llama.cppへ渡す追加の引数。**フラグ以外を入れてはいけない。**
+   *
+   * Runtime側で `Module.arguments` の先頭に入るが、`main.cpp` のparserは未知のtokenを
+   * 「ここからprompt」と解釈して**黙って**打ち切る(エラーにはならない)ので、綴り違いは
+   * promptの汚染として現れる。
+   *
+   * いま渡す必要があるのは `-c`(n_ctx)。`main.cpp` は `n_batch` を `n_ctx` に
+   * 縛っているので、この値はprefillのcompute bufferの大きさを直接決め、それはpeerに載る。
+   *
+   * requesterへの `-device cpu` は**要らない**。`main.cpp` はRPC deviceを集めてから
+   * `devices.empty()` のときだけlocal fallbackを足すので、peerが居る構成では
+   * requesterのlocal WebGPUはmodel placementの対象に入らない。
+   */
+  args?: string[];
 };
 
 /** peer役(RPCサーバ)を起動する。箱は同期で返る */
@@ -132,10 +155,14 @@ export function startPeerRuntime(options: StartPeerOptions): RuntimeBox<PeerRunt
     const mod = await loadRuntimeModule(url, options.importModule ?? importByUrl);
     const runtime = mod.startPeer({
       peerManager: options.manager,
+      disableWebGPU: options.disableWebGPU,
       onLog: options.onLog,
       onError: options.onError,
     });
-    log.info(`[wasm] ${url} を読み込み、startPeer() で起動しました`);
+    log.info(
+      `[wasm] ${url} を読み込み、startPeer() で起動しました` +
+        `(backend: ${options.disableWebGPU ? "CPU" : "WebGPU"})`,
+    );
     return runtime;
   });
 }
@@ -152,12 +179,16 @@ export function startRequesterRuntime(
       peerManager: options.manager,
       peerIds: options.peerIds,
       model: options.model,
+      args: options.args,
       onText: options.onText,
       onLog: options.onLog,
       onError: options.onError,
     });
     log.info(
-      `[wasm] ${url} を読み込み、startRequester() で起動しました(peers: ${options.peerIds.join(", ")})`,
+      `[wasm] ${url} を読み込み、startRequester() で起動しました` +
+        `(peers: ${options.peerIds.join(", ")}` +
+        `, model: ${options.model.kind === "file" ? options.model.file.name : options.model.url}` +
+        `${options.args?.length ? `, args: ${options.args.join(" ")}` : ""})`,
     );
     return runtime;
   });

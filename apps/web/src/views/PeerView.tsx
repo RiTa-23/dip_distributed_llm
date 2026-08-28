@@ -21,6 +21,18 @@ import type { AbortReason, Phase } from "../types/cluster";
 import styles from "./PeerView.module.css";
 
 /**
+ * `?cpu=1` でこのpeerをCPUバックエンドで動かす。
+ *
+ * MoEモデルはWebGPU peerだとfirst tokenに到達しない(Runtime側のO11)。同じモデルが
+ * CPU peerなら完走するので、MoEを載せる回はタブごとにこれを付けて起動する。
+ * dense modelでは付けない(WebGPUの方が速い)。
+ *
+ * 読むのはモジュール読み込み時の1回だけ。実行中に切り替わる値ではない。
+ */
+const CPU_BACKEND =
+  typeof location !== "undefined" && new URLSearchParams(location.search).get("cpu") === "1";
+
+/**
  * 接続の進み具合。実測できるのは「相手が決まった」「開いた」の2段だけなので、
  * 途中の値を作らずこの3つに丸める。受信したバイト数自体は数えているが
  * (`webrtc/peerStats.ts`)、総量が分からないので進捗率にはできない。
@@ -216,6 +228,7 @@ export function PeerView() {
   const runtime = useWasmEngine({
     manager: rpc.manager,
     enabled: joined,
+    disableWebGPU: CPU_BACKEND,
     // Runtimeのstdout/stderr。画面には出さないが、層の割り当てやRPCの様子は
     // ここにしか出ないので、コンソールでは追えるようにしておく
     onLog: (line) => console.info(`[runtime] ${line}`),

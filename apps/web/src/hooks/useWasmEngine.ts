@@ -27,6 +27,11 @@ export type UseWasmEngineOptions = {
   onLog?: (line: string) => void;
   /** Runtimeが異常終了した。ダミーへは落ちないので、ここに来たら失敗 */
   onError?: (error: unknown) => void;
+  /**
+   * peerをCPUバックエンドで動かす。MoEモデルはWebGPU peerだとfirst tokenに
+   * 到達しない(Runtime側のO11)ため、MoEを載せるあいだはtrueにする。
+   */
+  disableWebGPU?: boolean;
 };
 
 export type PeerRuntimeState = {
@@ -37,7 +42,7 @@ export type PeerRuntimeState = {
 };
 
 export function useWasmEngine(options: UseWasmEngineOptions): PeerRuntimeState {
-  const { manager, enabled } = options;
+  const { manager, enabled, disableWebGPU } = options;
   const [state, setState] = useState<PeerRuntimeState>({ ready: false, error: null });
 
   // 描画のたびに最新のコールバックを預け直す。依存配列に入れると、
@@ -61,6 +66,7 @@ export function useWasmEngine(options: UseWasmEngineOptions): PeerRuntimeState {
     // 読み込みの途中で離脱してもcleanupが確実に止められる
     const box = startPeerRuntime({
       manager,
+      disableWebGPU,
       onLog: (line) => latest.current.onLog?.(line),
       onError: (error) => latest.current.onError?.(error),
     });
@@ -84,7 +90,7 @@ export function useWasmEngine(options: UseWasmEngineOptions): PeerRuntimeState {
       boxRef.current = null;
       void box.stop();
     };
-  }, [enabled, manager]);
+  }, [enabled, manager, disableWebGPU]);
 
   return state;
 }

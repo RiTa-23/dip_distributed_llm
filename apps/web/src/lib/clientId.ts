@@ -34,11 +34,37 @@ export function randomId(): string {
 }
 
 /**
+ * URLでclientIdを指定するためのクエリ名。
+ *
+ * localStorageは**オリジン単位**なので、1台のPCで参加者タブを複数開くと全部が同じ
+ * clientIdを名乗り、RPC peerが1つにしか見えない。1台から複数のpeerを出したいときは
+ * `?peerId=peer-1` のようにタブごとへ明示的に別のIDを渡す。
+ *
+ * ⚠️ 上書きした値は**localStorageへ保存しない**。保存すると、上書き無しで開いた
+ * 別のタブがそのIDを引き継いでしまう。
+ */
+/** peer用URLの指定を読む。空文字は「指定なし」として扱う */
+export function getPeerIdOverride(search: string): string | null {
+  const value = new URLSearchParams(search).get("peerId");
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function idFromQuery(role: Role): string | null {
+  if (role !== "peer" || typeof location === "undefined") return null;
+  return getPeerIdOverride(location.search);
+}
+
+/**
  * clientIdはlocalStorageに残す。
  * 毎回作り直すと、リロードのたびに別人としてロスターに載り、
  * 抜けたはずの参加者が残り続ける。
+ *
+ * URLで明示された場合はそちらを優先する(上のQUERY_KEYSを参照)。
  */
 export function getClientId(role: Role): string {
+  const override = idFromQuery(role);
+  if (override) return override;
   const key = KEYS[role];
   const saved = localStorage.getItem(key);
   if (saved) return saved;
