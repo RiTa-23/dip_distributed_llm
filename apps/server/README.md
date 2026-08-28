@@ -206,11 +206,144 @@ LAN IPのURLだけが返る。
 
 ### 環境変数(すべて任意)
 
+`.env.example` をコピーして `.env.local` に書けば、Bunが自動で読む。
+起動時に並べる必要はない。**`.env.local` は `.gitignore` 済み。**
+
+```bash
+cp .env.example .env.local
+```
+
 | 変数 | 用途 |
 |---|---|
 | `TLS_CERT` / `TLS_KEY` | 証明書のパスを明示指定する。両方揃っているときだけ有効 |
 | `PUBLIC_ORIGIN` | 参加者に配るオリジンを上書きする。既定は証明書から決まる |
-| `CF_API_TOKEN` / `CF_ZONE_ID` / `CF_RECORD_NAME` | `bun run dns` 用 |
+| `PORT` | 待ち受けポート。既定は証明書があれば8443、無ければ3000 |
+| `WS_PING_INTERVAL_SEC` | 生存確認のping間隔(秒)。既定30 |
+| `CF_API_TOKEN` / `CF_ZONE_ID` / `CF_RECORD_NAME` | `bun run dns` 用。**ドメインの持ち主だけ** |
+
+## 開発中、他のメンバーのPCでサーバーを立てる
+
+ドメインの持ち主(以下「ホスト役」)のPCをリバースプロキシにすると、
+**秘密鍵を配らずに**他のメンバーのPCでサーバーを立てられる。
+
+```text
+参加者の端末 ──https──▶ ホスト役のPC ──https──▶ 立てる人のPC
+                        (Caddy)                (Hono / mkcert)
+                        LE証明書はここだけ
+```
+
+**Aレコードはホスト役のPCを指したまま動かさない。** 立てる人が変わったら、
+Caddyの転送先を1行変えるだけ。**同時に立てない前提**の運用。
+
+- 証明書もCloudflareのトークンも**配らない**
+- 立てる人は mkcert だけあればよい
+- **全員が同じLANにいることが前提**(AレコードがプライベートIPを指すため)
+
+### 立てる人がやること
+
+```bash
+bun install
+bun run --cwd apps/server setup      # mkcert が要る
+cp apps/server/.env.example apps/server/.env.local
+```
+
+`.env.local` に1行足す。
+
+```dotenv
+PUBLIC_ORIGIN=https://llm.example.com:8443
+```
+
+あとは `bun run --cwd apps/server dev`。
+
+> **`bun run setup` は必ず通すこと。** 証明書が無いとHonoは **HTTPの3000番**で起動する
+> (「証明書の選ばれ方」を参照)。下のCaddyの例は `https://...:8443` へ転送するので、
+> **接続できず 502 になる。**
+>
+> 仮にポートを合わせても、`PUBLIC_ORIGIN` の `https://` と配信中の `http` が食い違って
+> 無視されるため、QRがLAN IPのままになる(「参加者に配るURLの決まり方」を参照)。
+
+### ホスト役がやること
+
+```bash
+brew install caddy
+```
+
+`Caddyfile` を書く(リポジトリには入れない)。
+
+```caddyfile
+{
+	auto_https off
+}
+
+llm.example.com:8443 {
+	tls /path/to/apps/server/certs/prod/cert.pem /path/to/apps/server/certs/prod/key.pem
+
+	reverse_proxy https://member-mac.local:8443 {
+		transport http {
+			tls_insecure_skip_verify
+		}
+	}
+}
+```
+
+```bash
+caddy run --config Caddyfile
+```
+
+- `transport http { ... }` は**必ず複数行で書く。** 1行にまとめるとCaddyが構文エラーにする
+- `tls_insecure_skip_verify` … **転送先の証明書を検証しない指定。**
+  同一LAN内の開発用途として許容している(後述)
+- 転送先は **`<ホスト名>.local` を推奨**。相手のIPが変わっても追随する(macOSは自動で名乗る)
+- WebSocketの `Upgrade` はCaddyが自動で通す(v2は設定不要)
+
+担当が変わったら転送先を書き換えて `caddy reload`。
+
+#### `tls_insecure_skip_verify` について
+
+転送先(メンバーのHono)はmkcertの証明書で動くため、そのままでは検証できない。
+厳密に検証する構成にもできるが、次の2つが要る。
+
+```caddyfile
+	reverse_proxy https://member-pc.local:8443 {
+		transport http {
+			tls_trust_pool file "/path/to/そのメンバーの/rootCA.pem"
+			tls_server_name localhost
+		}
+	}
+```
+
+- **`tls_trust_pool` に渡すrootCAは、メンバーごとに違う。** mkcertのCAは端末ごとに
+  生成されるので(`mkcert -CAROOT`)、**人数分コピーしてもらう**必要がある
+- **パスは引用符で囲む。** macOSの `mkcert -CAROOT` は
+  `~/Library/Application Support/mkcert` で**空白を含む**ため、
+  囲まないとCaddyが途中で切って `no such file or directory` になる
+- **`tls_server_name` は相手の証明書のSANに入っている名前にする。**
+  mkcertは `.local` 名をSANに入れない(`DNS:localhost` とIPのみ)ので、
+  `.local` で転送しているなら `localhost` を指定することになる
+
+**手間に見合うかで判断してよい。** この経路は開発中だけのもので、
+デモ本番の参加者⇄Honoはこのプロキシを通らない。
+
+**ホスト役自身が立てるときはCaddyを使わない。** 止めていつも通り `bun run dev` すれば、
+ポートの取り合いも起きず今まで通り動く。
+
+### 通る通信・通らない通信
+
+| 通信 | ホスト役のPCを | 量 |
+|---|---|---|
+| 画面・`/ws` の制御メッセージ | **通る** | 小 |
+| `/models/*`(GGUF) | **通る** | 開発中はダミーなので問題なし |
+| WebRTCのテンソル・モデル配布 | **通らない**(P2P直結) | 大だが影響なし |
+
+**推論の重いところは経由しない。**
+
+### 弱点
+
+- **ホスト役のPCが止まると、ドメイン経由では誰も開発できない**(スリープ含む)
+- ホスト役のLAN IPが変わったら `bun run dns` でAレコードを更新する
+
+これが重いなら、**各自mkcertのままで警告はクリックスルー**が素直。
+開発用途ならsecure contextは成立するので動作確認自体はできる。
 
 ### 会場でうまくいかないとき
 

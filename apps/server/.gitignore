@@ -4,6 +4,12 @@ node_modules/
 # TLS証明書(mkcert。各自ローカルで生成 → bun run cert)
 certs/
 
+# ローカル設定(PUBLIC_ORIGIN・Cloudflareのトークン等)。Bunが自動で読む。
+# トークンを書いた .env.local をコミットしてしまう事故を防ぐ
+.env
+.env.*
+!.env.example
+
 # 静的配信の成果物・大容量ファイル(各自ローカルで用意)
 public/models/*
 !public/models/.gitkeep
