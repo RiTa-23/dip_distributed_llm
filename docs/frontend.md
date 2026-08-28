@@ -155,12 +155,14 @@ apps/web/src/
 │   │                          (useWebrtcSignaling へ広げて渡す形で返す)
 │   ├── usePeerStats.ts        計測値を250msごとに読んで画面へ渡す
 │   ├── useWasmEngine.ts       ①のWASMの起動をいつ始めるかだけを持つ
+│   ├── useLightsOut.ts        待ち時間のパズルの盤面(フェーズには関与しない)
 │   └── useHonoSocket.mock.ts  Honoの代わり。本物と同じ形を返す
 ├── lib/
 │   ├── clientId.ts            localStorageに保存するclientId(役割ごとに別キー)
 │   ├── assignments.ts         層の割り当ての仮置き(表示専用)
 │   ├── parseServerMessage.ts  受信JSONの検証。契約に合わないフレームは捨てる
 │   ├── wsUrl.ts               接続先URLの組み立て
+│   ├── lightsOut.ts           ライツアウトの盤面(25ビットの純関数だけ)
 │   └── format.ts              バイト数・件数・時間の表示
 ├── webrtc/                    Reactに依存しない接続の組み立て
 │   ├── session.ts             共通の型・世代の判定・candidateの順番待ち
@@ -174,6 +176,7 @@ apps/web/src/
 ├── components/                両画面で使う部品。1部品1フォルダ相当
 │   ├── TopBar / StatusBlock / LayerBar / ProgressBar / Metric / DevPanel
 │   ├── JoinQr                 参加者を集めるQR(発表者画面のサイドバー)
+│   ├── LightsOut              待ち時間のパズルの盤面(参加者画面の下端)
 └── views/
     ├── PeerView.tsx
     └── RequesterView.tsx
@@ -210,6 +213,41 @@ VITE_HONO_ORIGIN=https://localhost:8443 bun run dev
 mkcertのローカルCAは飛び入り参加者の端末に入っていないため、QRを読んだ端末には必ず警告が出ます。SharedArrayBufferにHTTPSが要る以上、HTTPへ逃げる手もありません。通過手順(「詳細設定」→「アクセスする」)をQRの近くに出して、警告ごと受け入れる方針にしています。警告ゼロ化は#23の宿題です。
 
 **`apps/server/scripts/gen-cert.sh` のLAN IP取得はmacOS前提**(`route -n get default` / `ipconfig getifaddr`)で、Windowsでは空になります。この状態だとQRで配るIPが証明書のSANに入りません。発表者PCがWindowsになる場合は、そのIPを明示して証明書を再発行してください。
+
+## 待ち時間のパズル(参加者画面、#106)
+
+参加者は `connecting`(モデルを受信中)と `active`(貢献中)のあいだ、画面を見ているだけになります。とくに `active` は世代が続くかぎり終わらないので、参加者から見た待ち時間としては最長です。そこに5×5のライツアウトを置いています([`components/LightsOut.tsx`](../apps/web/src/components/LightsOut.tsx))。
+
+出すのはこの2つのフェーズだけで、置き場所は画面のいちばん下です。進捗バー・層バー・計測値という「今どうなっているか」を先に読ませ、パズルはその下に置きます。**上の要素の描画条件は1つも変えていません**(`connecting` で止まったときの案内(#63)を潰さないため)。発表者画面には出しません。
+
+### ゲームループを持たない作りにしてある
+
+裏では数GBのGGUFが流れ、`active` ではRPCも走っています。ここで `requestAnimationFrame` や `setInterval` を回すと、ゲーム側のGCがRPCの応答遅延として出るうえ、逆にメインスレッドが詰まればゲームがカクついて「アプリが壊れている」ように見えます。
+
+そこで**押されたときだけ計算・再描画する**形にしています。canvasを使わないのも同じ理由で、canvasは描画そのものがメインスレッドで走り、backing storeがDPR2で数MBのGPUメモリを取ります。DOMなら見た目の変化はCSSのtransition(コンポジタ側)が受け持つので、メインスレッドが詰まっていても滑らかに見えます。
+
+実測(`connecting` へ切り替えた前後、Chrome):
+
+| 見たもの | 結果 |
+|---|---|
+| 盤面のDOMノード数 | 32 |
+| `performance.memory.usedJSHeapSize` の増分 | 計測できず(この値の分解能より小さい) |
+
+盤面の状態は **25ビットのビットマスク(number 1個)** です。ロジックは [`lib/lightsOut.ts`](../apps/web/src/lib/lightsOut.ts) に純関数だけで置いてあり、Reactにも `window` にも依存しません(テストは [`lib/lightsOut.test.ts`](../apps/web/src/lib/lightsOut.test.ts))。
+
+初期盤面は**全消灯からランダムに数手 `toggleAt` を掛けて**作ります。`toggleAt` は同じマスに2回掛けると元へ戻るので、こうして作った盤面は必ず解けます。ランダムに点灯させる作り方だと解けない盤面が混ざります(5×5では全体の1/4しか解けない)。
+
+### 状態を持つのは `PeerView` 側
+
+盤面の状態は [`hooks/useLightsOut.ts`](../apps/web/src/hooks/useLightsOut.ts) が持ち、**呼ぶのは `PeerView`** です。`LightsOut` の中に置くと、`active → reorganizing → connecting → active` と往復するたびにアンマウントされて**遊びかけの盤面が消えます**。フェーズの外側に置いておけば、参加しているあいだは1問が続きます。
+
+`PeerView` に状態が1つ増えると1手ごとに再描画されますが、`usePeerStats` が参加中は250msごとに再描画を起こしているので実質的な増分はありません。
+
+パズルからは `dispatch` も `send` も呼びません。フェーズを動かすのは従来どおり `clusterReducer` とサーバだけです。
+
+### 点灯に `--c-active` を使わない
+
+点灯は `--c-line`(青)、消灯は `--c-surface-2` です。「この色が見えている場所＝稼働中」という規則があり、`active` では同じ画面で脈打つドットと `LayerBar` が黄を使っています。盤面25マスを黄にすると稼働表示が埋もれます。`--c-active` を使うのはクリア表示の枠と文字だけで、これは#68の「嬉しい出来事には active 色を使う」と同じ扱いです。
 
 ## 書くときの決まりごと
 

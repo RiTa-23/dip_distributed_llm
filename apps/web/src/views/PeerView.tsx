@@ -5,12 +5,14 @@ import { LayerBar } from "../components/LayerBar";
 import { ProgressBar } from "../components/ProgressBar";
 import { Metric, MetricGrid } from "../components/Metric";
 import { DevPanel } from "../components/DevPanel";
+import { LightsOut } from "../components/LightsOut";
 import { useCluster } from "../hooks/useCluster";
 import { useWebrtcSignaling } from "../hooks/useWebrtcSignaling";
 import type { WebrtcStatus } from "../hooks/useWebrtcSignaling";
 import { usePeerManager } from "../hooks/usePeerManager";
 import { usePeerStats } from "../hooks/usePeerStats";
 import { useStalled } from "../hooks/useStalled";
+import { useLightsOut } from "../hooks/useLightsOut";
 import { useWasmEngine } from "../hooks/useWasmEngine";
 import { getClientId } from "../lib/clientId";
 import { describeMemory, describeWebgpu } from "../lib/environment";
@@ -153,6 +155,10 @@ export function PeerView() {
   // 誰かが ready にならない、といった理由で次の世代が組めないと、画面は無言のまま
   // 止まる。時間で気づけるようにして、繋ぎ直しの導線を出す(#63)
   const reorganizingStalled = useStalled(phase === "reorganizing", REORGANIZING_STALL_MS);
+
+  // 待ち時間のパズル(#106)。フェーズには一切関与しない(dispatch も send も呼ばない)。
+  // ここで持つのは、盤面が出ない reorganizing を挟んでも遊びかけが消えないようにするため
+  const game = useLightsOut();
 
   /**
    * この端末が計算に参加できなくなったことを伝える。**画面をerrorにするだけでは足りない**(#79)。
@@ -415,6 +421,24 @@ export function PeerView() {
               value={stats.responseMs === null ? NO_VALUE : formatDuration(stats.responseMs)}
             />
           </MetricGrid>
+        )}
+
+        {/*
+          待ち時間のパズル(#106)。参加者はモデルの受信中と貢献中、画面を見ている
+          だけになる。とくに貢献中は世代が続くかぎり終わらないので、参加者から見た
+          待ち時間としては最長になる。
+
+          いちばん下に置くのは、進捗・層バー・計測値という「今どうなっているか」を
+          先に読ませるため。上の要素の描画条件は1つも変えていない
+        */}
+        {(phase === "connecting" || isActive) && (
+          <LightsOut
+            board={game.board}
+            moves={game.moves}
+            cleared={game.cleared}
+            onPress={game.press}
+            onReset={game.reset}
+          />
         )}
       </div>
 
