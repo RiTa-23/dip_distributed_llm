@@ -92,6 +92,7 @@ export function RequesterView() {
   // 12.93GBのようなモデルをURL経路で読むと、chunkが順にIndexedDBへ溜まって
   // ディスクを二重に使う(Runtime側のF4/F26)。File経路ならそれが要らない
   const [modelFile, setModelFile] = useState<File | null>(null);
+  const activeModelName = modelFile?.name ?? MODEL_NAME;
   const toastTimer = useRef<number | null>(null);
 
   // 生成の窓。**Runtimeの `onText` には起動時のstdoutも流れてくる**ので、
@@ -391,7 +392,7 @@ export function RequesterView() {
         left={
           <>
             第{state.generation}世代 · 接続 {state.roster.length}人 ·{" "}
-            <span className={styles.mono}>{MODEL_NAME}</span>
+            <span className={styles.mono}>{activeModelName}</span>
           </>
         }
         right={
