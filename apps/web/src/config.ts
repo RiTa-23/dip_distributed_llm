@@ -5,10 +5,14 @@ import type { IceEnv } from "./webrtc/iceConfig";
 /** Honoの制御プレーン。ステップ3で useHonoSocket が使う */
 export const WS_PATH = "/ws";
 
-/** モデルの層数。本来は①のWASMから取れるはずの値で、今は仮置き */
+/** モデルの層数(#65)。`/model-info` が取れないときのフォールバック。通常はサーバ由来の値を使う */
 export const TOTAL_LAYERS = 32;
 
+/** モデルファイル名(#65)。`/model-info` が取れないときのフォールバック */
 export const MODEL_NAME = "qwen2.5-0.5b-instruct-q4_k_m.gguf";
+
+/** モデル名・層数を Hono に問い合わせるパス(#65)。サーバが配る値が情報源 */
+export const MODEL_INFO_PATH = "/model-info";
 
 /** 表示名の初期値。参加者が書き換える */
 export const DEFAULT_DISPLAY_NAME = "参加者のPC";
