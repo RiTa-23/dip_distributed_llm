@@ -20,7 +20,7 @@ native/                   WASM版llama.cpp・RPCパッチ(別ビルドパイプ�
 docs/                     設計ドキュメント
 ```
 
-`native/` はまだリポジトリに存在しない。Runtime成果物は別ビルドで用意し、`apps/server/public/wasm/` に配置する。
+Runtime成果物は別ビルドで用意し、`apps/server/public/wasm/` に配置する。
 詳しくは [docs/directory-structure.md](./docs/directory-structure.md) を参照。
 
 ## 環境構築

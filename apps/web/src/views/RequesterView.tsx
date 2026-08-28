@@ -20,6 +20,18 @@ import styles from "./RequesterView.module.css";
 type ChatEntry = { role: "user" | "assistant"; text: string };
 
 /**
+ * llama.cppへ渡す n_ctx(`-c`)。
+ *
+ * `main.cpp` は `n_batch` を `n_ctx` に縛っているため、この値はprefillの
+ * compute bufferの大きさを直接決め、その buffer は peer に載る。モデルが宣言する
+ * context長(Qwen3.6なら262144)は「対応上限」であって使う義務はないので、
+ * メモリの変数を減らすために明示的に小さく固定する。
+ *
+ * ⚠️ promptのUTF-8バイト長はこの値より**厳密に小さい**必要がある(Runtime側が検証して投げる)。
+ */
+const CONTEXT_SIZE = 2048;
+
+/**
  * トースト1件ぶんの中身とトーン(#68)。「人が増えた」は嬉しい出来事、
  * 「誰か落ちた」は残念な出来事なので、同じ扱いにしない。編成完了などの
  * 単なる進行の合図は info(装飾なし)にする
@@ -77,6 +89,11 @@ export function RequesterView() {
   const [generating, setGenerating] = useState(false);
   const [computingIndex, setComputingIndex] = useState<number | null>(null);
   const [input, setInput] = useState("分散推論のしくみを一言で教えて");
+  // ローカルのGGUF。選ばれていればHono配信のかわりにこれを使う。
+  // 12.93GBのようなモデルをURL経路で読むと、chunkが順にIndexedDBへ溜まって
+  // ディスクを二重に使う(Runtime側のF4/F26)。File経路ならそれが要らない
+  const [modelFile, setModelFile] = useState<File | null>(null);
+  const activeModelName = modelFile?.name ?? model.name;
   const toastTimer = useRef<number | null>(null);
 
   // 生成の窓。**Runtimeの `onText` には起動時のstdoutも流れてくる**ので、
@@ -184,7 +201,17 @@ export function RequesterView() {
     generation: rtc.generation,
     allOpen,
     peerIds: rtc.expectedIds,
-    model: { kind: "url", url: `/models/${model.name}` },
+    // ローカルのGGUFが選ばれていればそちらを使う。選ばれていなければ従来どおりHono配信。
+    //
+    // ⚠️ **読まれるのはRuntimeを立てる瞬間の値**(世代が始まったとき)。選び直しても
+    // 走っている世代には効かないので、大きいモデルを使うときは**参加者が来る前に選ぶ**。
+    model: modelFile
+      ? { kind: "file", file: modelFile }
+      : { kind: "url", url: `/models/${model.name}` },
+    // n_ctx。`main.cpp` は `n_batch` を `n_ctx` に縛っているので、この値は
+    // prefillのcompute bufferの大きさを直接決め、それはpeerに載る。モデルが宣言する
+    // 上限(Qwen3.6なら262144)は「使ってよい上限」であって使う義務はない
+    args: ["-c", String(CONTEXT_SIZE)],
     // `/model-info` の確定を待ってからRuntimeを起動し、仮置きモデル名で立ち上がらないようにする(#65)
     modelSettled,
     onText: (delta) => {
@@ -368,7 +395,7 @@ export function RequesterView() {
         left={
           <>
             第{state.generation}世代 · 接続 {state.roster.length}人 ·{" "}
-            <span className={styles.mono}>{model.name}</span>
+            <span className={styles.mono}>{activeModelName}</span>
           </>
         }
         right={
@@ -424,6 +451,27 @@ export function RequesterView() {
             <ProgressBar value={modelProgress} label="モデルのダウンロード" />
             <div className={styles.dim}>
               {modelReady ? "読み込み済み" : "Runtimeの準備を待っています"}
+            </div>
+            {/*
+              ローカルのGGUFを直接渡す口。大きいモデルをHono配信で読むと、chunkが
+              IndexedDBへ溜まってディスクを二重に使う(Runtime側のF4/F26)。
+              選ばなければ従来どおり `/models/` から取る。
+
+              ⚠️ **参加者が来る前に選ぶこと。** requester Runtimeは世代が始まった瞬間に
+              立ち上がり、そのときのモデルを掴んだままなので、後から選び直しても
+              走っている世代には効かない
+            */}
+            <label className={styles.dim}>
+              ローカルのGGUFを使う(任意)
+              <input
+                type="file"
+                accept=".gguf"
+                disabled={rtc.generation > 0}
+                onChange={(e) => setModelFile(e.currentTarget.files?.[0] ?? null)}
+              />
+            </label>
+            <div className={styles.dim}>
+              {modelFile ? `ローカル: ${modelFile.name}` : "配信されているモデルを使います"}
             </div>
           </div>
 
