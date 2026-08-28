@@ -319,6 +319,40 @@ export function applyGenerationFailed(
 }
 
 /**
+ * model_changed: requesterがモデルを差し替えたので、**同じ顔ぶれのまま**組み直す。
+ *
+ * requester Runtimeは世代の開始時にモデルを掴んで離さない
+ * (`hooks/useRequesterRuntime.ts` が generation をキーに起動する)ため、
+ * 新しい世代を始めない限り差し替えが効かない。
+ *
+ * **`applyGenerationFailed` と決定的に違うのは `failedPeerIds` を触らないこと。**
+ * あちらは「その顔ぶれでは失敗した」を記録して同じ編成を避けるが、こちらは
+ * 同じ顔ぶれで組み直すのが目的なので、記録するとその場で編成が止まる。
+ *
+ * 推論中(active)でも受け付ける。走っている生成は中断されるが、それは
+ * 「今すぐ別のモデルを見せたい」という操作の当然の結果で、requesterの意思。
+ */
+export function applyModelChanged(
+  state: ClusterState,
+  clientId: string,
+  generation: number,
+): Effect[] {
+  const c = state.clients.get(clientId);
+  if (!c || c.role !== "requester") return []; // requester以外からの送信は無視
+  if (state.phase !== "active") return [];
+  if (generation !== state.generation) return []; // 古い世代の通知
+
+  const aborted: GenerationAbortedMessage = {
+    type: "generation_aborted",
+    generation: state.generation,
+    reason: "model_changed",
+    message: "モデルが変わったため編成をやり直します",
+  };
+  state.phase = "idle";
+  return [{ kind: "broadcast", msg: aborted }, ...maybeStartGeneration(state)];
+}
+
+/**
  * webrtc_signal: 中身を解釈せず targetId 宛に転送するだけ。宛先不明なら破棄。
  *
  * `fromId` が送信者本人かを検証する(#54)。ここを見ないと、任意のクライアントが

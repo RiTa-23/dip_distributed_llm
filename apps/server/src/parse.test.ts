@@ -113,3 +113,23 @@ describe("generation_failed(#56)", () => {
     expect(parseClientMessage({ type: "generation_failed", generation: -1 })).toBeNull();
   });
 });
+
+describe("model_changed(モデル差し替えによる組み直し)", () => {
+  test("正しい形は通す", () => {
+    expect(parseClientMessage({ type: "model_changed", generation: 3 })).toEqual({
+      type: "model_changed",
+      generation: 3,
+    });
+  });
+
+  test("generation が無い", () => {
+    expect(parseClientMessage({ type: "model_changed" })).toBeNull();
+  });
+
+  test("小数・負数・NaN は弾く", () => {
+    // 通すと現世代との比較が常に外れ、「押しているのに何も起きない」になる
+    for (const generation of [1.5, -1, Number.NaN]) {
+      expect(parseClientMessage({ type: "model_changed", generation })).toBeNull();
+    }
+  });
+});

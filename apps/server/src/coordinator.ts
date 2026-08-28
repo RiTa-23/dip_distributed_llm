@@ -106,6 +106,11 @@ export class Coordinator {
     this.run(roster.applyGenerationFailed(this.state, clientId, generation));
   }
 
+  /** モデルの差し替え。同じ顔ぶれのまま組み直す(失敗扱いにしない) */
+  modelChanged(clientId: string, generation: number): void {
+    this.run(roster.applyModelChanged(this.state, clientId, generation));
+  }
+
   signal(clientId: string, msg: WebrtcSignalMessage): void {
     this.run(roster.applySignal(this.state, clientId, msg));
   }

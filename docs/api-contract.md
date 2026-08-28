@@ -51,6 +51,7 @@ SDP/ICE candidateをHono経由で相手に転送。requester→peer、peer→req
 - `peer_disconnected`: 既存peerの切断で編成が壊れた
 - `peer_joined`: 生成中に新規peerが`ready`になり、Honoが能動的に組み直した(後述`requester_accepting`が`true`の間のみ)
 - `connection_failed`: requesterが後述`generation_failed`を送ってきた(その編成では接続が成立しなかった)
+- `model_changed`: requesterが後述`model_changed`を送ってきた(モデルを載せ替えるための組み直し)。**失敗ではない**ので、同じ顔ぶれのまま次の世代が始まる
 
 ### 7. `requester_accepting` (client → server, requesterのみ)
 生成中(`active`)に新規peerが加入してもよいかをrequesterが伝える。Honoは送信者がrole===`requester`であることを検証し、それ以外からの送信は無視する。
@@ -74,6 +75,18 @@ SDP/ICE candidateをHono経由で相手に転送。requester→peer、peer→req
 - したがって、接続に失敗したpeerは`peer_status: "error"`を送ることが望ましい(下記「世代開始の条件」を参照)
 - **クライアント側も1世代につき1回しか送らない。** requesterは予期しないDataChannelのclose・`connectionState: "failed"`・SDP/ICEの失敗をすべて同じ経路(`webrtc/requesterSession.ts`の`fatalFail()`)へ通し、最初の1回でそのセッションを閉じる。Hono側の検証(世代一致・`phase`)と二重になるが、送る側でも絞ってあるほうが世代交代の最中に古い世代ぶんが飛ぶ余地が小さい
 - ⚠️ **WebSocketが生きたままDataChannelだけが死んだ場合、これだけでは次の世代が始まらない。** `phase`は`idle`へ戻るが顔ぶれが変わっていないため、上記「同じ顔ぶれでの即時リトライはしない」に当たる。peerの切断・`error`・入り直しのいずれかが要る
+
+### 9. `model_changed` (client → server, requesterのみ)
+requesterがモデルを載せ替えたので、**同じ顔ぶれのまま**編成を組み直させる。
+```json
+{ "type": "model_changed", "generation": 3 }
+```
+- requester Runtimeは**世代の開始時にモデルを掴んで離さない**(`hooks/useRequesterRuntime.ts`が`generation`をキーに起動する)。したがって新しい世代を始めない限り、ファイルを選び直しても走っている世代には効かない
+- Honoは送信者が`requester`であること、`generation`が現在の世代と一致すること、`phase`が`active`であることを検証する。いずれかを満たさなければ無視する
+- 受理すると`generation_aborted`(reason: `model_changed`)を全員に配信して`idle`へ戻し、続けて`generation_start`を出す
+- ⚠️ **`generation_failed`を流用してはいけない。** あちらは失敗した顔ぶれを`failedPeerIds`に記録して同じ編成を避けるため、モデル差し替えに使うとその場で編成が止まる。こちらは`failedPeerIds`を触らない
+- 推論中(`generating`)でも受け付ける。走っている生成は中断されるが、requesterの明示的な操作の結果であり事故ではない
+- 画面側は「選ぶ」と「載せる」を分けている。選んだだけでは送らず、**適用を押したときだけ**送る(誤クリックで参加者を巻き込まないため)
 
 ## 世代開始の条件
 

@@ -84,6 +84,11 @@ const REORGANIZING_TEXT: Record<AbortReason, { hint: string; notice: string }> =
     hint: "接続がうまくいきませんでした",
     notice: "つながる相手だけで組み直しています",
   },
+  // 発表者がモデルを載せ替えた。誰も抜けていないので、残念な出来事ではない
+  model_changed: {
+    hint: "モデルが変わりました",
+    notice: "新しいモデルで組み直しています",
+  },
 };
 
 const REORGANIZING_FALLBACK = {
@@ -99,6 +104,8 @@ const REORGANIZING_TONE: Record<AbortReason, "joyful" | "calm"> = {
   peer_joined: "joyful",
   peer_disconnected: "calm",
   connection_failed: "calm",
+  // 誰も抜けていない。発表者の操作で組み直しているだけなので落ち着いた見せ方にする
+  model_changed: "calm",
 };
 
 function reorganizingTone(reason: AbortReason | null): "joyful" | "calm" {

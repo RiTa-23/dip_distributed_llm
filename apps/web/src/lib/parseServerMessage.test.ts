@@ -110,3 +110,25 @@ describe("parseServerMessage", () => {
     expect(parseServerMessage(roster)).toBeNull();
   });
 });
+
+describe("generation_aborted の reason を取りこぼさない", () => {
+  // 受け入れリストに無い reason は黙って捨てられ、「サーバは送っているのに画面が
+  // 動かない」という追いにくい不具合になる。契約に足したら必ずここも足す
+  test("契約にある reason は全て通る", () => {
+    const reasons: GenerationAbortedMessage["reason"][] = [
+      "peer_disconnected",
+      "peer_joined",
+      "connection_failed",
+      "model_changed",
+    ];
+    for (const reason of reasons) {
+      const msg: GenerationAbortedMessage = {
+        type: "generation_aborted",
+        generation: 1,
+        reason,
+        message: "テスト",
+      };
+      expect(parseServerMessage(JSON.stringify(msg))).toEqual(msg);
+    }
+  });
+});

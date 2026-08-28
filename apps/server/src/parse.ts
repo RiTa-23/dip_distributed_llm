@@ -68,6 +68,14 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
       }
       return { type: "generation_failed", generation };
     }
+    case "model_changed": {
+      const { generation } = raw;
+      // generation_failed と同じ理由で非負整数に限る
+      if (typeof generation !== "number" || !Number.isInteger(generation) || generation < 0) {
+        return null;
+      }
+      return { type: "model_changed", generation };
+    }
     default:
       return null;
   }

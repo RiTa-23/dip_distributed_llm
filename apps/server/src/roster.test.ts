@@ -7,6 +7,7 @@ import {
   applyDisconnect,
   applyGenerationFailed,
   applyHello,
+  applyModelChanged,
   applyPeerStatus,
   applyRequesterAccepting,
   applySignal,
@@ -555,5 +556,74 @@ describe("失敗した編成のやり直し(1台構成の復帰)", () => {
     expect(firstOf(applyPeerStatus(s, "p2", "error"), "generation_start")).toBeUndefined();
     expect(firstOf(applyPeerStatus(s, "p2", "error"), "generation_start")).toBeUndefined();
     expect(s.generation).toBe(2);
+  });
+});
+
+describe("model_changed によるモデル差し替え(#110相当)", () => {
+  /** requester と2台のpeerで世代1を開始した状態を作る。 */
+  function started() {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "p2", "peer", "P2");
+    applyPeerStatus(s, "p1", "ready");
+    applyPeerStatus(s, "p2", "ready");
+    expect(s.phase).toBe("active");
+    expect(s.generation).toBe(1);
+    return s;
+  }
+
+  test("同じ顔ぶれのまま次の世代を始める", () => {
+    // ここが generation_failed との決定的な違い。あちらは failedPeerIds を
+    // 立てて同じ編成を避けるので、モデル差し替えに流用すると編成が止まる
+    const s = started();
+    const eff = applyModelChanged(s, "req", 1);
+
+    const aborted = firstOf(eff, "generation_aborted");
+    expect(aborted?.reason).toBe("model_changed");
+    expect(aborted?.generation).toBe(1);
+
+    const start = firstOf(eff, "generation_start");
+    expect(start?.peerIds).toEqual(["p1", "p2"]); // 顔ぶれは変わらない
+    expect(start?.generation).toBe(2);
+    expect(s.phase).toBe("active");
+  });
+
+  test("失敗として記録しない", () => {
+    const s = started();
+    applyModelChanged(s, "req", 1);
+    expect(s.failedPeerIds).toBeNull();
+  });
+
+  test("requester以外からは無視する", () => {
+    const s = started();
+    const eff = applyModelChanged(s, "p1", 1);
+    expect(eff).toEqual([]);
+    expect(s.generation).toBe(1);
+  });
+
+  test("古い世代の通知は無視する", () => {
+    // 差し替えを2回続けて押したときに、遅れて届いた1通目で組み直さない
+    const s = started();
+    applyModelChanged(s, "req", 1);
+    expect(s.generation).toBe(2);
+    const eff = applyModelChanged(s, "req", 1);
+    expect(eff).toEqual([]);
+    expect(s.generation).toBe(2);
+  });
+
+  test("生成が走っていなければ何もしない", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    expect(s.phase).toBe("idle");
+    expect(applyModelChanged(s, "req", 0)).toEqual([]);
+  });
+
+  test("何度押しても世代が1つずつ進む", () => {
+    const s = started();
+    applyModelChanged(s, "req", 1);
+    applyModelChanged(s, "req", 2);
+    expect(s.generation).toBe(3);
+    expect(s.phase).toBe("active");
   });
 });

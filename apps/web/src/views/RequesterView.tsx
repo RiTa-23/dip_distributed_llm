@@ -92,8 +92,16 @@ export function RequesterView() {
   // ローカルのGGUF。選ばれていればHono配信のかわりにこれを使う。
   // 12.93GBのようなモデルをURL経路で読むと、chunkが順にIndexedDBへ溜まって
   // ディスクを二重に使う(Runtime側のF4/F26)。File経路ならそれが要らない
-  const [modelFile, setModelFile] = useState<File | null>(null);
-  const activeModelName = modelFile?.name ?? model.name;
+  //
+  // **「選んだファイル」と「今Runtimeに載っているファイル」を分けて持つ。**
+  // 1つにまとめると、選んだ瞬間に `modelFile` が変わり、別の理由(参加者の増減)で
+  // 再編成が走ったときに意図せず新しいモデルが載ってしまう。載せ替えは
+  // 「適用」を押したときだけに限る
+  const [pickedModelFile, setPickedModelFile] = useState<File | null>(null);
+  const [appliedModelFile, setAppliedModelFile] = useState<File | null>(null);
+  const activeModelName = appliedModelFile?.name ?? model.name;
+  /** 選んだが、まだ載せていない */
+  const modelPending = pickedModelFile !== null && pickedModelFile !== appliedModelFile;
   const toastTimer = useRef<number | null>(null);
 
   // 会話が伸びても入力欄は固定になったので、ログ側を最新まで追従させる(#105)。
@@ -218,12 +226,13 @@ export function RequesterView() {
     generation: rtc.generation,
     allOpen,
     peerIds: rtc.expectedIds,
-    // ローカルのGGUFが選ばれていればそちらを使う。選ばれていなければ従来どおりHono配信。
+    // ローカルのGGUFが「適用」されていればそちらを使う。無ければ従来どおりHono配信。
     //
-    // ⚠️ **読まれるのはRuntimeを立てる瞬間の値**(世代が始まったとき)。選び直しても
-    // 走っている世代には効かないので、大きいモデルを使うときは**参加者が来る前に選ぶ**。
-    model: modelFile
-      ? { kind: "file", file: modelFile }
+    // 読まれるのはRuntimeを立てる瞬間の値(世代が始まったとき)。選び直しただけでは
+    // 走っている世代に効かないので、`model_changed` を送って新しい世代を始める
+    // (下の `applyModel`)。ここが `picked` ではなく `applied` を見るのはそのため
+    model: appliedModelFile
+      ? { kind: "file", file: appliedModelFile }
       : { kind: "url", url: `/models/${model.name}` },
     // n_ctx。`main.cpp` は `n_batch` を `n_ctx` に縛っているので、この値は
     // prefillのcompute bufferの大きさを直接決め、それはpeerに載る。モデルが宣言する
@@ -253,6 +262,28 @@ export function RequesterView() {
   const modelReady = requester.ready;
   const modelProgress = modelReady ? 1 : 0;
   const canSubmit = phase === "active" && modelReady && !generating;
+
+  /**
+   * 選んだモデルを載せる。
+   *
+   * requester Runtimeは世代の開始時にモデルを掴んで離さないので、**新しい世代を
+   * 始めない限り差し替えが効かない**。Honoに `model_changed` を送って同じ顔ぶれの
+   * まま組み直させ、その新しい世代で `appliedModelFile` が読まれる。
+   *
+   * 状態を先に進めるのは、`generation_start` を受けてRuntimeが立つときには
+   * もう新しい値が入っている必要があるため。組み直しに失敗しても、次に世代が
+   * 始まったときに新しいモデルで立ち上がる(取り残されない)。
+   *
+   * 生成中でも押せる。走っている生成は中断されるが、それは「今すぐ別のモデルを
+   * 見せたい」という操作の当然の結果。
+   */
+  const applyModel = () => {
+    if (!modelPending) return;
+    setAppliedModelFile(pickedModelFile);
+    // 編成が組まれていなければ送っても捨てられる。次の世代で新しい値が読まれるので
+    // これで足りる(サーバ側も phase !== "active" は無視する)
+    if (phase === "active") send({ type: "model_changed", generation: rtc.generation });
+  };
 
   // トラックB: 編成。接続できたら名乗り、すぐ準備完了とする(発表者に起動待ちはない)
   useEffect(() => {
@@ -474,22 +505,40 @@ export function RequesterView() {
               IndexedDBへ溜まってディスクを二重に使う(Runtime側のF4/F26)。
               選ばなければ従来どおり `/models/` から取る。
 
-              ⚠️ **参加者が来る前に選ぶこと。** requester Runtimeは世代が始まった瞬間に
-              立ち上がり、そのときのモデルを掴んだままなので、後から選び直しても
-              走っている世代には効かない
+              **選ぶことと載せることを分けてある。** requester Runtimeは世代の開始時に
+              モデルを掴んで離さないので、載せ替えには新しい世代が要る。選んだだけで
+              組み直すと、参加者を巻き込む操作が誤クリックで起きてしまう
             */}
             <label className={styles.dim}>
               ローカルのGGUFを使う(任意)
               <input
                 type="file"
                 accept=".gguf"
-                disabled={rtc.generation > 0}
-                onChange={(e) => setModelFile(e.currentTarget.files?.[0] ?? null)}
+                onChange={(e) => setPickedModelFile(e.currentTarget.files?.[0] ?? null)}
               />
             </label>
             <div className={styles.dim}>
-              {modelFile ? `ローカル: ${modelFile.name}` : "配信されているモデルを使います"}
+              {appliedModelFile
+                ? `ローカル: ${appliedModelFile.name}`
+                : "配信されているモデルを使います"}
             </div>
+            {modelPending && (
+              <div className={styles.dim}>
+                <button type="button" onClick={applyModel}>
+                  {pickedModelFile?.name} を載せる
+                </button>
+                {/*
+                  何が起きるかを押す前に見せる。参加者を巻き込むうえ、生成中なら
+                  途中の回答が消えるので、黙って実行してよい操作ではない
+                */}
+                <div>
+                  {state.roster.length > 0
+                    ? `参加者${state.roster.length}台を巻き込んで編成を組み直します`
+                    : "編成を組み直します"}
+                  {generating && "。表示中の回答は中断されます"}
+                </div>
+              </div>
+            )}
           </div>
 
           <div>
