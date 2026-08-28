@@ -7,6 +7,7 @@ import { Coordinator, type Socket } from "./coordinator";
 import { parseClientMessage } from "./parse";
 import { buildJoinUrls, normalizePublicOrigin } from "./lanAddress";
 import { bunModelLookup, handleModelRequest } from "./modelFile";
+import { modelInfo } from "./modelInfo";
 import { pickTlsFiles, publicHostFromSan, publicOriginFrom } from "./tlsConfig";
 
 const app = new Hono();
@@ -202,6 +203,13 @@ app.get("/join-info", (c) =>
     joinUrls: buildJoinUrls(networkInterfaces(), hasTls ? "https" : "http", port, PUBLIC_ORIGIN),
   }),
 );
+
+// --- モデル情報の配布(#65) ---
+// モデル名・層数をサーバから配る。config.ts にハードコードしたままだと、モデルを
+// 差し替えたときに層バーが実態とずれる。フロントは取得に失敗しても config の
+// フォールバックで成立するため、到達不能でも画面は壊れない。
+// /join-info と同じ理由で静的配信より前に置く。
+app.get("/model-info", (c) => c.json(modelInfo()));
 
 // --- 状態の確認(#58) ---
 // デモ中に「何人つながっていて、どの世代で、誰が ready か」をブラウザで見るための口。

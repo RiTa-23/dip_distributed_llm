@@ -16,7 +16,7 @@ import { getClientId } from "../lib/clientId";
 import { describeMemory, describeWebgpu } from "../lib/environment";
 import { useEnvironment } from "../hooks/useEnvironment";
 import { formatBytes, formatCount, formatDuration, NO_VALUE } from "../lib/format";
-import { DEFAULT_DISPLAY_NAME, REORGANIZING_STALL_MS, TOTAL_LAYERS } from "../config";
+import { DEFAULT_DISPLAY_NAME, REORGANIZING_STALL_MS } from "../config";
 import type { AbortReason, Phase } from "../types/cluster";
 import styles from "./PeerView.module.css";
 
@@ -125,7 +125,7 @@ export function PeerView() {
   const [displayName, setDisplayName] = useState(DEFAULT_DISPLAY_NAME);
   // useCluster が初期状態に取り込むので、先に決めておく
   const [myId] = useState(() => getClientId("peer"));
-  const { state, dispatch, send, lastMessage, assignments, debug } = useCluster({
+  const { state, dispatch, send, lastMessage, assignments, debug, model } = useCluster({
     enabled: joined,
     myId,
     role: "peer",
@@ -293,6 +293,8 @@ export function PeerView() {
           <>
             参加者 {state.roster.length}人
             {state.generation > 0 ? ` · 第${state.generation}世代` : ""}
+            {" · "}
+            <span className={styles.mono}>{model.name}</span>
           </>
         }
         right={
@@ -381,7 +383,7 @@ export function PeerView() {
 
         {(phase === "connecting" || phase === "active" || phase === "reorganizing") && (
           <LayerBar
-            totalLayers={TOTAL_LAYERS}
+            totalLayers={model.totalLayers}
             assignments={assignments}
             roster={state.roster}
             highlightClientId={myId}
