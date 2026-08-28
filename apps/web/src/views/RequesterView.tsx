@@ -96,6 +96,23 @@ export function RequesterView() {
   const activeModelName = modelFile?.name ?? model.name;
   const toastTimer = useRef<number | null>(null);
 
+  // 会話が伸びても入力欄は固定になったので、ログ側を最新まで追従させる(#105)。
+  // 送信時・ストリーミング中は自動で最下部へスクロールする。ただしユーザーが
+  // 過去を読んでいるときに勝手に動かすと邪魔なので、下端付近にいるときだけ追従する
+  const logRef = useRef<HTMLDivElement | null>(null);
+  const nearBottomRef = useRef(true);
+
+  const handleLogScroll = () => {
+    const el = logRef.current;
+    if (!el) return;
+    nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  };
+
+  useEffect(() => {
+    const el = logRef.current;
+    if (el && nearBottomRef.current) el.scrollTop = el.scrollHeight;
+  }, [chat, streaming, generating]);
+
   // 生成の窓。**Runtimeの `onText` には起動時のstdoutも流れてくる**ので、
   // generateを呼んだ前後で区切って、そのあいだに来たぶんだけを回答として扱う。
   // stateではなくrefなのは、onTextが再描画と無関係に高頻度で呼ばれるのと、
@@ -506,7 +523,7 @@ export function RequesterView() {
           {phase === "error" && state.errorMessage && (
             <p className={styles.errorDetail}>{state.errorMessage}</p>
           )}
-          <div className={styles.log}>
+          <div className={styles.log} ref={logRef} onScroll={handleLogScroll}>
             {chat.map((m, i) => (
               <div key={i} className={m.role === "user" ? styles.user : styles.assistant}>
                 {m.text}

@@ -1,13 +1,20 @@
 .page {
-  min-height: 100svh;
+  /* 会話が長くてもページ自体は伸ばさない。ビューポート内で完結させ、
+     .log だけを内部スクロールして入力欄を常に画面下部に固定する(#105) */
+  height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .body {
   flex: 1;
   display: grid;
   grid-template-columns: minmax(0, 230px) minmax(0, 1fr);
+  /* 行の高さをコンテンツ基準で伸ばさず、残りビューポート高さで固定する(#105)。
+     minmax(0, 1fr) が無いと .log が内部スクロールせずページごと伸びてしまう */
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
 }
 
@@ -100,6 +107,7 @@
 
 .log {
   flex: 1;
+  min-height: 0;
   padding: 20px;
   display: flex;
   flex-direction: column;
@@ -133,6 +141,13 @@
   display: flex;
   gap: 10px;
   align-items: center;
+  /* 入力欄が画面下部に常に張り付くようにする(#105)。
+     .log が内部スクロールするなら下に留まったまま動かない。何らかの理由で
+     ページ側がスクロールする場合も sticky bottom で画面上部に流れない。
+     flex: none は flex 縮小で消えないようにするための保険 */
+  position: sticky;
+  bottom: 0;
+  flex: none;
 }
 
 .sendButton {
@@ -247,6 +262,8 @@
 @media (max-width: 860px) {
   .body {
     grid-template-columns: minmax(0, 1fr);
+    /* 上段: サイドバー(横並び・高さは内容分)、下段: チャット(残りを占有) */
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .sidebar {
