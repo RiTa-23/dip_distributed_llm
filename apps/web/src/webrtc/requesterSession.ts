@@ -103,6 +103,11 @@ export function createRequesterSession({
       pc,
       channel,
       candidates: createCandidateQueue((candidate) => {
+        // 相手の候補が**届いているか**を見る(`[webrtc]` で絞れる)。
+        // 1件も出なければシグナリング側の問題で、届いているのに繋がらないなら経路側。
+        // TURNを足すかどうかの判断がここで割れるので、成功時だけ報告する
+        // `attachIceDiagnostics` とは別に、候補そのものを残しておく
+        console.log(`[webrtc] remote candidate peer=${peerId} ${candidate.candidate ?? ""}`);
         void pc
           .addIceCandidate(candidate)
           .catch((e: unknown) => fatalFail(peerId, describeError(e)));
@@ -135,7 +140,21 @@ export function createRequesterSession({
 
     pc.onicecandidate = (e: RTCPeerConnectionIceEvent) => {
       if (disposed || !e.candidate) return;
+      // 自分側に集まった候補の種類を見る。**host しか出なければ direct 専用**で、
+      // 端末間が直接通れないLANでは繋がらない(= TURNが要る)。TURNを設定していれば
+      // `type=relay` が出るはずで、出なければTURNへ到達できていない
+      console.log(
+        `[webrtc] local candidate peer=${peerId} type=${e.candidate.type} protocol=${e.candidate.protocol} address=${e.candidate.address ?? "?"}`,
+      );
       signal(peerId, { kind: "ice-candidate", candidate: e.candidate.toJSON() });
+    };
+
+    // checking のまま止まるのか failed まで行くのかで、経路が無いのか遅いだけなのかが割れる。
+    // `CONNECT_STALL_MS`(10秒)はICEが諦めるより先に切るので、サーバのログだけでは
+    // 「時間切れ」としか分からない。ICE自身の判定はここにしか残らない
+    pc.oniceconnectionstatechange = () => {
+      if (disposed) return;
+      console.log(`[webrtc] iceConnectionState peer=${peerId} → ${pc.iceConnectionState}`);
     };
 
     pc.onconnectionstatechange = () => {
