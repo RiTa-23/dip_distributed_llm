@@ -293,6 +293,8 @@ export function PeerView() {
           <>
             参加者 {state.roster.length}人
             {state.generation > 0 ? ` · 第${state.generation}世代` : ""}
+            {" · "}
+            <span className={styles.mono}>{model.name}</span>
           </>
         }
         right={

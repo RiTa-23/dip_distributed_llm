@@ -43,6 +43,12 @@ export type UseRequesterRuntimeOptions = {
   peerIds: string[];
   model: ModelSource;
   /**
+   * `model` が確定したか(#65)。`useModelInfo` の `/model-info` 取得が終わるまでは
+   * フォールバック値の可能性がある。Runtimeはこれを**待ってから起動**しないと、
+   * 仮置きモデル名で立ち上がって後から乖離する(CodeRabbit #101)。
+   */
+  modelSettled: boolean;
+  /**
    * 生成された文字。**起動時のstdoutも同じ口に来る**ので、呼ぶ側で
    * generateの前後を区切ってから成否に使うこと(`RequesterView` の window)。
    * 古い世代のRuntimeからのぶんはここに来る前に落ちる。
@@ -83,7 +89,7 @@ export class GenerationSupersededError extends Error {
 }
 
 export function useRequesterRuntime(options: UseRequesterRuntimeOptions): UseRequesterRuntime {
-  const { manager, owner, generation, allOpen } = options;
+  const { manager, owner, generation, allOpen, modelSettled } = options;
   const [state, setState] = useState<RequesterRuntimeState>({
     ready: false,
     error: null,
@@ -106,8 +112,9 @@ export function useRequesterRuntime(options: UseRequesterRuntimeOptions): UseReq
   const startedGenerationRef = useRef(0);
 
   useEffect(() => {
-    if (generation <= 0 || !allOpen) {
-      // 立てられる状態ではない。ここに来るのは世代前・再編成中・相手が落ちたとき。
+    if (generation <= 0 || !allOpen || !modelSettled) {
+      // 立てられる状態ではない。ここに来るのは世代前・再編成中・相手が落ちたとき・
+      // モデル情報がまだ確定していないとき(#65)。
       // 直前の cleanup でRuntimeは畳んでいるので、**持ち主も手放す**。
       // ここで手放さないと、畳んだ後のトークンが現行のままになり、
       // 進行中だった生成の reject を画面が障害として受け取ってしまう
@@ -124,6 +131,9 @@ export function useRequesterRuntime(options: UseRequesterRuntimeOptions): UseReq
     tokenRef.current = mine;
     setState({ ready: false, error: null, generation });
 
+    // `/model-info` の確定を待ってから起動するので、ここで渡す model が仮置きの
+    // ままで立ち上がることはない(#65)。確定後に値は変わらないため、生成途中で
+    // Runtimeを張り替える必要もない
     const box = startRequesterRuntime({
       manager,
       peerIds: [...latest.current.peerIds],
@@ -167,7 +177,7 @@ export function useRequesterRuntime(options: UseRequesterRuntimeOptions): UseReq
       }
       void box.stop();
     };
-  }, [manager, owner, generation, allOpen]);
+  }, [manager, owner, generation, allOpen, modelSettled]);
 
   // unmount で持ち主を手放す。以降どのトークンも通らない
   useEffect(() => () => owner.release(), [owner]);

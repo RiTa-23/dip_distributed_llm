@@ -10,12 +10,16 @@
 export const MODEL_NAME = "qwen2.5-0.5b-instruct-q4_k_m.gguf";
 export const TOTAL_LAYERS = 32;
 
+/**
+ * `/models/<name>` の `<name>` と総層数をまとめた配布情報。
+ */
 export type ModelInfo = {
   /** `/models/<name>` の `<name>` */
   name: string;
   totalLayers: number;
 };
 
+/** 配布するモデルの情報を返す。`/model-info` はこの結果をそのままJSON化する(#65)。 */
 export function modelInfo(): ModelInfo {
   return { name: MODEL_NAME, totalLayers: TOTAL_LAYERS };
 }

@@ -34,6 +34,8 @@ export type Cluster = {
   debug: SocketDebug | null;
   /** モデル名・総層数(サーバ由来。#65)。取得失敗時はconfig.tsのフォールバック値 */
   model: ModelInfo;
+  /** `/model-info` の取得完了・失敗確定(#65)。確定前は model が仮置きの可能性がある */
+  modelSettled: boolean;
 };
 
 /**
@@ -51,7 +53,7 @@ export function useCluster(options: { enabled: boolean; myId: string; role: Role
   }));
   const { connected, lastMessage, send, debug } = useSocket(options);
   // モデル名・総層数はサーバが配る(#65)。層バーの総数と仮の割り当てに使う
-  const model = useModelInfo();
+  const { settled, ...model } = useModelInfo();
 
   useEffect(() => {
     dispatch(connected ? { type: "socket_opened" } : { type: "socket_closed" });
@@ -83,5 +85,5 @@ export function useCluster(options: { enabled: boolean; myId: string; role: Role
     [generationPeers, model.totalLayers],
   );
 
-  return { state, dispatch, send, lastMessage, assignments, debug, model };
+  return { state, dispatch, send, lastMessage, assignments, debug, model, modelSettled: settled };
 }

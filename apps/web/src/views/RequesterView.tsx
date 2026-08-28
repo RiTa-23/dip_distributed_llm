@@ -66,11 +66,12 @@ type GenerationWindow = { token: GenerationToken; text: string };
 export function RequesterView() {
   // useCluster が初期状態に取り込むので、先に決めておく
   const [myId] = useState(() => getClientId("requester"));
-  const { state, dispatch, send, lastMessage, assignments, debug, model } = useCluster({
-    enabled: true,
-    myId,
-    role: "requester",
-  });
+  const { state, dispatch, send, lastMessage, assignments, debug, model, modelSettled } =
+    useCluster({
+      enabled: true,
+      myId,
+      role: "requester",
+    });
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [streaming, setStreaming] = useState("");
   const [generating, setGenerating] = useState(false);
@@ -184,6 +185,8 @@ export function RequesterView() {
     allOpen,
     peerIds: rtc.expectedIds,
     model: { kind: "url", url: `/models/${model.name}` },
+    // `/model-info` の確定を待ってからRuntimeを起動し、仮置きモデル名で立ち上がらないようにする(#65)
+    modelSettled,
     onText: (delta) => {
       const open = windowRef.current;
       // 窓が開いていない = 起動時のstdout。持ち主でない = 前の世代の窓が残っているだけ
