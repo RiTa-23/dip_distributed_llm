@@ -190,6 +190,10 @@ app.get(
             // requester かどうか・世代が合っているかは roster 側で見る(#56)
             if (clientId) coordinator.generationFailed(clientId, msg.generation);
             break;
+          case "model_changed":
+            // generation_failed と同じく、権限と世代の判定は roster 側
+            if (clientId) coordinator.modelChanged(clientId, msg.generation);
+            break;
         }
       },
       onClose() {

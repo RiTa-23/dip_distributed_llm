@@ -49,12 +49,24 @@ export type GenerationFailedMessage = {
   generation: number;
 };
 
+export type ModelChangedMessage = {
+  // requesterのみ送信可。モデルを差し替えたので、**同じ顔ぶれのまま**編成を
+  // 組み直させる。requester Runtimeは世代の開始時にモデルを掴んで離さないため、
+  // 新しい世代を始めない限り差し替えが効かない。
+  //
+  // `generation_failed` を流用してはいけない。あちらは失敗した顔ぶれを
+  // `failedPeerIds` に記録して同じ編成を避けるので、狙いと真逆になる。
+  type: "model_changed";
+  generation: number;
+};
+
 export type ClientMessage =
   | HelloMessage
   | PeerStatusMessage
   | WebrtcSignalMessage
   | RequesterAcceptingMessage
-  | GenerationFailedMessage;
+  | GenerationFailedMessage
+  | ModelChangedMessage;
 
 // ---------- サーバ → クライアント ----------
 export type RosterUpdateMessage = {
@@ -75,7 +87,8 @@ export type GenerationAbortedMessage = {
   // peer_disconnected: 既存peerの切断で編成が壊れた
   // peer_joined: 生成中に新規peerがreadyになり、Honoが能動的に組み直した(acceptingGrowth時)
   // connection_failed: requesterが generation_failed を送ってきた(編成が成立しなかった)
-  reason: "peer_disconnected" | "peer_joined" | "connection_failed";
+  // model_changed: requesterがモデルを差し替えた。**同じ顔ぶれで組み直す**(失敗ではない)
+  reason: "peer_disconnected" | "peer_joined" | "connection_failed" | "model_changed";
   message: string;
 };
 
