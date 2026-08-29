@@ -92,3 +92,63 @@ export function usePeerStats(stats: PeerStatsReader, enabled: boolean): PeerStat
 
   return view;
 }
+
+/**
+ * 相手ごとの内訳(#115)。発表者画面が「誰に何バイト送ったか」を出すのに使う。
+ *
+ * 合計を返す `usePeerStats` と分けてあるのは、**必要な側が違う**ため。
+ * 参加者は自分の受信量しか要らないが、発表者は配布が偏っていないか・
+ * 特定の相手で止まっていないかを見たい。
+ *
+ * これが要るのは、大きいモデルで2台以上つなぐと配布が失敗する問題の切り分け(#115)。
+ * 層分割が効いていれば各peerは**モデルサイズ / 台数**程度を受け取るはずで、
+ * 1台がモデル全体を受け取っていれば分割が効いていないことになる。
+ * 止まった位置が送信キュー上限(64MB)と受信キュー上限(256MB)のどちらの
+ * 近傍かでも、原因が割れる。
+ *
+ * サンプリング間隔と「変化が無ければ再描画しない」方針は `usePeerStats` と同じ。
+ */
+export function usePeerStatsByRemote(
+  stats: PeerStatsReader,
+  enabled: boolean,
+): Map<string, PeerStatsSnapshot> {
+  const [byRemote, setByRemote] = useState<Map<string, PeerStatsSnapshot>>(new Map());
+
+  const [wasEnabled, setWasEnabled] = useState(enabled);
+  if (wasEnabled !== enabled) {
+    setWasEnabled(enabled);
+    setByRemote(new Map());
+  }
+
+  useEffect(() => {
+    if (!enabled) return;
+    const id = window.setInterval(() => {
+      const next = new Map<string, PeerStatsSnapshot>();
+      for (const remoteId of stats.remoteIds()) next.set(remoteId, stats.snapshotOf(remoteId));
+      setByRemote((current) => (sameByRemote(current, next) ? current : next));
+    }, SAMPLE_MS);
+    return () => clearInterval(id);
+  }, [stats, enabled]);
+
+  return byRemote;
+}
+
+/** 表示に効く値が全相手で同じか。同じなら再描画しない */
+function sameByRemote(
+  a: Map<string, PeerStatsSnapshot>,
+  b: Map<string, PeerStatsSnapshot>,
+): boolean {
+  if (a.size !== b.size) return false;
+  for (const [id, next] of b) {
+    const current = a.get(id);
+    if (!current) return false;
+    if (
+      current.bytesReceived !== next.bytesReceived ||
+      current.bytesSent !== next.bytesSent ||
+      current.turns !== next.turns
+    ) {
+      return false;
+    }
+  }
+  return true;
+}

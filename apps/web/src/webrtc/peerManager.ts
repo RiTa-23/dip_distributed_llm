@@ -207,6 +207,13 @@ type Link = {
   queuedBytes: number;
   /** 再開待ちの後片付け。止めていないときはnull */
   disarm: (() => void) | null;
+  /**
+   * 送信キューが埋まったことを既に報せたか。
+   *
+   * 埋まっている間はフレームごとに `full` を返すので、そのたびに出すと
+   * ログが流れて他が読めなくなる。**入ったときの1回だけ**出す。
+   */
+  reportedFull: boolean;
 };
 
 /** 受信した生データをバイト列に直す。文字列は使わないので捨てる */
@@ -349,7 +356,15 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
       link.queuedBytes -= head.frame.byteLength;
     }
     if (link.queue.length > 0) startWaiting(link);
-    else stopWaiting(link);
+    else {
+      // 空になった = 詰まりが解けた。次に詰まったらまた1回だけ報せる。
+      // 何度も詰まるなら、その回数自体が「配布が回線に対して速すぎる」の証拠になる
+      if (link.reportedFull) {
+        link.reportedFull = false;
+        console.warn(`[peerManager] 送信キューの詰まりが解消しました remote=${link.remoteId}`);
+      }
+      stopWaiting(link);
+    }
   };
 
   type PushResult = "written" | "queued" | "full" | "closed";
@@ -366,6 +381,18 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
     // 制御フレーム(1バイト)は上限の外に置く。ここで落とすと、CLOSEが出せずに
     // 相手の論理接続が残る・ACCEPTEDが返せず相手が待ち続ける、といった詰まり方をする
     if (fd !== null && link.queuedBytes + frame.byteLength > maxSendQueueBytes) {
+      // **ここに入ると `send()` が短い値を返し、残りの送り直しはC側任せになる。**
+      // 大きいモデルの配布でしか踏まないため、軽いモデルでは動いていたものが
+      // 大きいモデルで失敗する、という形で表面化する。受信側の上限超過と違って
+      // 何も起きないので、**入ったこと自体を残さないと切り分けられない**
+      if (!link.reportedFull) {
+        link.reportedFull = true;
+        console.warn(
+          `[peerManager] 送信キューが上限に達しました remote=${link.remoteId} ` +
+            `queued=${String(link.queuedBytes)} 上限=${String(maxSendQueueBytes)}。` +
+            `以降 send() は部分送信を返します(C側が送り直す前提)`,
+        );
+      }
       return "full";
     }
     link.queue.push({ frame, fd });
@@ -474,6 +501,13 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
     // こちらの都合で捨てるかどうかは「受け取った量」と関係がない
     stats.onReceived(link.remoteId, body.byteLength);
     if (conn.queuedBytes + body.byteLength > maxRecvQueueBytes) {
+      // **上限値も一緒に出す。** 「溜まりすぎた」だけだと、相手が速すぎるのか
+      // こちらのC側 recv が遅いのか、上限が小さすぎるのかを後から切り分けられない
+      console.warn(
+        `[peerManager] 受信キューが上限に達しました remote=${link.remoteId} ` +
+          `queued=${String(conn.queuedBytes)} 上限=${String(maxRecvQueueBytes)}。` +
+          `C側のrecvが回線に追いついていません`,
+      );
       onError?.(
         `${link.remoteId} からの受信が溜まりすぎました(${String(conn.queuedBytes)}バイト)。接続を切ります`,
       );
@@ -509,6 +543,7 @@ export function createPeerManager(options: PeerManagerOptions = {}): WebrtcPeerM
         queue: [],
         queuedBytes: 0,
         disarm: null,
+        reportedFull: false,
       });
     },
 

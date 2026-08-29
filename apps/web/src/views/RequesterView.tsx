@@ -12,7 +12,9 @@ import { GenerationSupersededError, useRequesterRuntime } from "../hooks/useRequ
 import { createGenerationOwner } from "../webrtc/generationOwner";
 import type { GenerationToken } from "../webrtc/generationOwner";
 import { createAcceptingSignal } from "../hooks/requesterAccepting";
+import { usePeerStatsByRemote } from "../hooks/usePeerStats";
 import { getClientId } from "../lib/clientId";
+import { formatBytes } from "../lib/format";
 import { CONNECT_STALL_MS } from "../config";
 import type { Phase } from "../types/cluster";
 import styles from "./RequesterView.module.css";
@@ -275,6 +277,10 @@ export function RequesterView() {
   const modelReady = requester.ready;
   const modelProgress = modelReady ? 1 : 0;
   const canSubmit = phase === "active" && modelReady && !generating;
+
+  // 相手ごとの転送量(#115)。大きいモデルで2台以上つなぐと配布が失敗する問題の切り分け用。
+  // 層分割が効いていれば各peerは「モデルサイズ / 台数」程度を受け取るはず
+  const transferByPeer = usePeerStatsByRemote(rpc.manager.stats, phase === "active");
 
   /**
    * 選んだモデルを載せる。
@@ -540,6 +546,15 @@ export function RequesterView() {
                       {PEER_STATUS_LABEL[peer.status]}
                       {assignment ? ` · 第${assignment.startLayer}〜${assignment.endLayer}層` : ""}
                       {isComputing ? " · 計算中" : ""}
+                      {/*
+                        この相手へ実際に送ったバイト数(#115)。層分割が効いていれば
+                        「モデルサイズ / 台数」程度で頭打ちになる。1台がモデル全体を
+                        受け取っていたら分割が効いていない
+                      */}
+                      {(() => {
+                        const sent = transferByPeer.get(peer.clientId)?.bytesSent ?? 0;
+                        return sent > 0 ? ` · 送信 ${formatBytes(sent)}` : "";
+                      })()}
                     </span>
                     <span className={styles.peerBar} />
                   </div>
