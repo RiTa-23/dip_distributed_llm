@@ -218,6 +218,38 @@ describe("Coordinator wiring", () => {
     // 無視されていれば既定trueのままなので、通常通り再編成される
     expect(typesOf(req)).toContain("generation_aborted");
   });
+
+  test("dismissPeers: peers_dismissed が発表者にも参加者にも届く(#114)", () => {
+    const co = new Coordinator();
+    const req = fakeSocket();
+    const p1 = fakeSocket();
+    co.hello("req", "requester", "発表者", req);
+    co.hello("p1", "peer", "P1", p1);
+    co.peerStatus("p1", "ready"); // gen 1 開始
+    req.sent.length = 0;
+    p1.sent.length = 0;
+
+    co.dismissPeers("req");
+    // 降ろされる本人にも届かないと、参加者は参加前の画面へ戻れない
+    expect(typesOf(p1)).toContain("peers_dismissed");
+    expect(typesOf(req)).toContain("peers_dismissed");
+    expect(co.status().peers).toEqual([]);
+    expect(co.status().phase).toBe("idle");
+  });
+
+  test("dismissPeers: peerが送っても無視される(#114)", () => {
+    const co = new Coordinator();
+    const req = fakeSocket();
+    const p1 = fakeSocket();
+    co.hello("req", "requester", "発表者", req);
+    co.hello("p1", "peer", "P1", p1);
+    co.peerStatus("p1", "ready");
+    req.sent.length = 0;
+
+    co.dismissPeers("p1");
+    expect(typesOf(req)).not.toContain("peers_dismissed");
+    expect(co.status().peers).toHaveLength(1);
+  });
 });
 
 describe("status() のスナップショット(#58)", () => {

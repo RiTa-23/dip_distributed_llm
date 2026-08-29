@@ -279,19 +279,39 @@ export function PeerView() {
     }
   }, [phase, rtc.status, dispatch]);
 
+  /**
+   * 発表者に編成を解除されたときの案内(#114)。null なら解除されていない。
+   *
+   * **自動で参加し直さない。** 発表者が全員を降ろすのは「いったん白紙にしたい」
+   * ときなので、勝手に戻ると解除にならない。戻るのは本人が「参加する」を押したとき
+   */
+  const [dismissedNotice, setDismissedNotice] = useState<string | null>(null);
+
   /** 参加する。ここから `enabled` が立ち、`/ws` への接続が始まる */
   const join = useCallback(() => {
     // 前回参加したぶんを持ち越さない。世代をまたいでも0には戻さないので、
     // 0に戻すのはここだけ
     rpc.manager.stats.reset();
+    setDismissedNotice(null);
     setJoined(true);
   }, [rpc.manager]);
 
   /** 離脱する。接続を畳んで画面を最初に戻す */
-  const leave = () => {
+  const leave = useCallback(() => {
     setJoined(false);
     dispatch({ type: "reset" });
-  };
+  }, [dispatch]);
+
+  /** 同じ1件で二度離脱しないための目印。`lastMessage` は離脱後も残る */
+  const seenDismissal = useRef<unknown>(null);
+
+  useEffect(() => {
+    if (!lastMessage || lastMessage.type !== "peers_dismissed") return;
+    if (seenDismissal.current === lastMessage) return;
+    seenDismissal.current = lastMessage;
+    setDismissedNotice(lastMessage.message);
+    leave();
+  }, [lastMessage, leave]);
 
   /** 繋ぎ直しの予約。この値で描画は変わらないので state ではなく ref に持つ */
   const wantsRejoin = useRef(false);
@@ -360,6 +380,11 @@ export function PeerView() {
 
         {phase === "idle" && (
           <div className={styles.form}>
+            {/*
+              解除された理由をここに出す(#114)。表示名は残してあるので、
+              下の「参加する」を押すだけで戻れる
+            */}
+            {dismissedNotice && <p className={styles.notice}>{dismissedNotice}</p>}
             <input
               type="text"
               value={displayName}

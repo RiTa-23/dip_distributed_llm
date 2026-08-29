@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type {
   GenerationAbortedMessage,
   GenerationStartMessage,
+  PeersDismissedMessage,
   RosterUpdateMessage,
   WebrtcSignalMessage,
 } from "@dip_distributed_llm/shared-types/messages";
@@ -13,7 +14,7 @@ const roster: RosterUpdateMessage = {
 };
 
 describe("parseServerMessage", () => {
-  test("契約どおりの4種はそのまま通る", () => {
+  test("契約どおりの5種はそのまま通る", () => {
     expect(parseServerMessage(JSON.stringify(roster))).toEqual(roster);
 
     const start: GenerationStartMessage = {
@@ -38,6 +39,18 @@ describe("parseServerMessage", () => {
       payload: { kind: "offer", sdp: "v=0..." },
     };
     expect(parseServerMessage(JSON.stringify(signal))).toMatchObject(signal);
+
+    const dismissed: PeersDismissedMessage = {
+      type: "peers_dismissed",
+      message: "発表者が編成を解除しました",
+    };
+    expect(parseServerMessage(JSON.stringify(dismissed))).toEqual(dismissed);
+  });
+
+  test("peers_dismissed は message が無ければ捨てる(#114)", () => {
+    // 参加者の画面に理由を出せない。黙って参加前へ戻すくらいなら受け取らない
+    expect(parseServerMessage(JSON.stringify({ type: "peers_dismissed" }))).toBeNull();
+    expect(parseServerMessage(JSON.stringify({ type: "peers_dismissed", message: 1 }))).toBeNull();
   });
 
   test("ロスターが空でも通る(まだ誰も来ていない状態)", () => {

@@ -5,6 +5,7 @@ import type {
 } from "@dip_distributed_llm/shared-types/messages";
 import {
   applyDisconnect,
+  applyDismissPeers,
   applyGenerationFailed,
   applyHello,
   applyModelChanged,
@@ -625,5 +626,99 @@ describe("model_changed によるモデル差し替え(#110相当)", () => {
     applyModelChanged(s, "req", 2);
     expect(s.generation).toBe(3);
     expect(s.phase).toBe("active");
+  });
+});
+
+describe("dismiss_peers による全員解除(#114)", () => {
+  /** requester と2台のpeerで世代1を開始した状態を作る。 */
+  function started() {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    applyHello(s, "p1", "peer", "P1");
+    applyHello(s, "p2", "peer", "P2");
+    applyPeerStatus(s, "p1", "ready");
+    applyPeerStatus(s, "p2", "ready");
+    expect(s.phase).toBe("active");
+    return s;
+  }
+
+  test("全peerがロスターから消え、requesterは残る", () => {
+    const s = started();
+    const eff = applyDismissPeers(s, "req");
+
+    expect(firstOf(eff, "peers_dismissed")).toBeDefined();
+    expect(firstOf(eff, "roster_update")?.peers).toEqual([]);
+    expect(currentRoster(s)).toEqual([]);
+    expect(s.clients.has("req")).toBe(true);
+  });
+
+  test("解除の理由をロスターの更新より先に届ける", () => {
+    // 逆順だと、参加者は理由の分からないまま0人のロスターを先に受け取る
+    const s = started();
+    const types = broadcasts(applyDismissPeers(s, "req")).map((m) => m.type);
+    expect(types).toEqual(["peers_dismissed", "roster_update"]);
+  });
+
+  test("active から idle に戻り、次の世代を勝手に始めない", () => {
+    const s = started();
+    const eff = applyDismissPeers(s, "req");
+    expect(s.phase).toBe("idle");
+    expect(s.activeGenerationPeerIds).toBeNull();
+    expect(firstOf(eff, "generation_start")).toBeUndefined();
+  });
+
+  test("generation_aborted は出さない", () => {
+    // 中断ではなく編成そのものの取り消し。出すと参加者が次の generation_start を
+    // 待ち続けるが、誰かが参加し直すまでそれは来ない
+    const s = started();
+    expect(firstOf(applyDismissPeers(s, "req"), "generation_aborted")).toBeUndefined();
+  });
+
+  test("失敗した編成の記録を残さない", () => {
+    // 残すと、解除前と同じ顔ぶれが戻ってきたときに即時リトライと誤判定されて
+    // 次の世代が始まらない
+    const s = started();
+    applyGenerationFailed(s, "req", 1);
+    expect(s.failedPeerIds).not.toBeNull();
+    applyDismissPeers(s, "req");
+    expect(s.failedPeerIds).toBeNull();
+  });
+
+  test("requester以外からは無視する", () => {
+    const s = started();
+    expect(applyDismissPeers(s, "p1")).toEqual([]);
+    expect(currentRoster(s)).toHaveLength(2);
+  });
+
+  test("未知のクライアントからは無視する", () => {
+    const s = started();
+    expect(applyDismissPeers(s, "unknown")).toEqual([]);
+    expect(currentRoster(s)).toHaveLength(2);
+  });
+
+  test("peerが0人なら何も配信しない", () => {
+    const s = createState();
+    applyHello(s, "req", "requester", "Req");
+    expect(applyDismissPeers(s, "req")).toEqual([]);
+  });
+
+  test("解除後に参加し直せば、世代は続きから始まる", () => {
+    const s = started();
+    applyDismissPeers(s, "req");
+    applyHello(s, "p1", "peer", "P1");
+    const eff = applyPeerStatus(s, "p1", "ready");
+
+    const start = firstOf(eff, "generation_start");
+    expect(start?.peerIds).toEqual(["p1"]);
+    expect(start?.generation).toBe(2); // 世代番号はリセットしない
+    expect(s.phase).toBe("active");
+  });
+
+  test("累計の統計はリセットしない", () => {
+    // stats は「これまで」を持つ役目で、現在のロスターとは別物(#60)
+    const s = started();
+    applyDismissPeers(s, "req");
+    expect(s.stats.totalPeers).toBe(2);
+    expect(s.stats.peakPeers).toBe(2);
   });
 });

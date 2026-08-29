@@ -16,9 +16,6 @@ const OTHER_PEERS: PeerInfo[] = [
   { clientId: "c-mock-hanako", displayName: "花子のPC", status: "ready" },
 ];
 
-/** 連続して届くメッセージの間隔。まとめて捨てられないよう1件ずつ流す */
-const FRAME_MS = 60;
-
 /**
  * Honoの代わり。返り値の形は本物の useHonoSocket と完全に同じにする。
  * ステップ3では useCluster の import を1行差し替えるだけで切り替わる。
@@ -35,6 +32,14 @@ export function useHonoSocketMock({ enabled }: SocketOptions): HonoSocket {
   const timers = useRef<number[]>([]);
   const queue = useRef<ServerMessage[]>([]);
   const flushing = useRef(false);
+  /**
+   * 予約済みの `startGeneration` だけを個別に持つ(#114)。全員解除で取り消すため。
+   *
+   * `timers` をまとめて捨てるのでは駄目で、あちらには emit の流し込み(`step`)も
+   * 混ざっている。全部消すと `flushing` が立ったまま止まり、解除の通知自体が
+   * 届かなくなる。
+   */
+  const generationTimer = useRef<number | null>(null);
 
   /**
    * 予約済みのタイマーを必ず捨てる。残すと、離脱したあとに emitRoster や
@@ -43,6 +48,7 @@ export function useHonoSocketMock({ enabled }: SocketOptions): HonoSocket {
   const clearAll = useCallback(() => {
     timers.current.forEach(clearTimeout);
     timers.current = [];
+    generationTimer.current = null;
     queue.current = [];
     flushing.current = false;
     peers.current = [];
@@ -56,24 +62,24 @@ export function useHonoSocketMock({ enabled }: SocketOptions): HonoSocket {
   }, [enabled, clearAll]);
 
   /**
-   * 同じ tick で setState を2回呼ぶと後の1件しか残らない(前の1件は誰にも観測されない)。
-   * 実際のWebSocketは別々のフレームで届くので、1件ずつ間隔を空けて流す。
+   * 1件ずつ流す。`lastMessage` は1枠しかないので、描画される前に次を入れると
+   * 前の1件が誰にも観測されないまま消える。本物の `useHonoSocket` と同じ形にする
+   * (次を出すのは commit のあと。理由はあちらのコメントに書いてある、#114)。
    */
   const emit = useCallback((msg: ServerMessage) => {
     queue.current.push(msg);
     if (flushing.current) return;
     flushing.current = true;
-    const step = () => {
-      const next = queue.current.shift();
-      if (!next) {
-        flushing.current = false;
-        return;
-      }
-      setLastMessage(next);
-      timers.current.push(window.setTimeout(step, FRAME_MS));
-    };
-    step();
+    const next = queue.current.shift();
+    if (next) setLastMessage(next);
   }, []);
+
+  useEffect(() => {
+    if (!flushing.current) return;
+    const next = queue.current.shift();
+    if (next) setLastMessage(next);
+    else flushing.current = false;
+  }, [lastMessage]);
 
   const emitRoster = useCallback(() => {
     emit({ type: "roster_update", peers: [...peers.current] });
@@ -94,6 +100,10 @@ export function useHonoSocketMock({ enabled }: SocketOptions): HonoSocket {
   );
 
   const startGeneration = useCallback(() => {
+    generationTimer.current = null;
+    // 組める相手がいなければ出さない。本物のHonoも `eligiblePeerIds` が null なら
+    // `generation_start` を出さない(空の peerIds を配ると画面が受信中へ進んで固まる)
+    if (peers.current.length === 0) return;
     generation.current += 1;
     emit({
       type: "generation_start",
@@ -104,6 +114,19 @@ export function useHonoSocketMock({ enabled }: SocketOptions): HonoSocket {
 
   const send = useCallback(
     (msg: ClientMessage) => {
+      // 全員解除(#114)。本物のHonoと同じく peers_dismissed → 空の roster_update の順。
+      // ここを繋がないと、モックだけで開発しているときボタンが無反応になる
+      if (msg.type === "dismiss_peers") {
+        if (peers.current.length === 0) return;
+        // 予約済みの編成を取り消す。残すと解除の数秒後に generation_start が出て、
+        // 参加者0人のまま画面が受信中へ戻る(本物のHonoは解除後に出さない)
+        if (generationTimer.current !== null) clearTimeout(generationTimer.current);
+        generationTimer.current = null;
+        peers.current = [];
+        emit({ type: "peers_dismissed", message: "発表者が編成を解除しました" });
+        emitRoster();
+        return;
+      }
       if (msg.type !== "hello") return;
       const self: PeerInfo[] =
         msg.role === "peer"
@@ -111,10 +134,13 @@ export function useHonoSocketMock({ enabled }: SocketOptions): HonoSocket {
           : [];
       peers.current = [OTHER_PEERS[0], ...self, OTHER_PEERS[1]];
       timers.current.push(window.setTimeout(emitRoster, 400));
-      // 待機中が一瞬で消えないよう、編成が組まれるまで少し間を置く
-      timers.current.push(window.setTimeout(startGeneration, 4200));
+      // 待機中が一瞬で消えないよう、編成が組まれるまで少し間を置く。
+      // 全員解除で取り消せるよう、これだけ id を控えておく(#114)
+      const scheduled = window.setTimeout(startGeneration, 4200);
+      generationTimer.current = scheduled;
+      timers.current.push(scheduled);
     },
-    [emitRoster, startGeneration],
+    [emit, emitRoster, startGeneration],
   );
 
   const addPeer = useCallback(

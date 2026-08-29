@@ -39,6 +39,39 @@
   margin-bottom: 10px;
 }
 
+/* 見出しの右端に操作を置く行(#114)。.sectionLabel の下マージンをここで受け持つ */
+.sectionHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.sectionHead .sectionLabel {
+  margin-bottom: 0;
+}
+
+/*
+  全員解除(#114)。見出しに並ぶので、index.css の既定より小さく詰める。
+  平常時は目立たせない — 押す機会は稀で、常に赤いと参加者一覧が警告に見える
+*/
+.dismiss {
+  font-size: 11px;
+  padding: 3px 8px;
+  color: var(--c-text-dim);
+  flex: none;
+}
+
+/*
+  1回目を押した状態。ここだけ --c-danger を使う(docs/frontend.md の色の決まり)。
+  次の1クリックで参加者全員が降りるので、平常時と同じ見た目では出せない
+*/
+.dismissArmed:not(:disabled) {
+  color: var(--c-danger);
+  border-color: var(--c-danger);
+}
+
 .peers {
   display: flex;
   flex-direction: column;

@@ -104,6 +104,24 @@ export function clusterReducer(s: ClusterState, a: ClusterAction): ClusterState 
             abortMessage: a.msg.message,
           };
 
+        case "peers_dismissed":
+          // 参加者側の後始末は PeerView が leave() で行う(#114)。ここで idle に
+          // 落とすと、離脱が反映される前の1描画で「参加する」画面が出てしまう
+          if (s.role === "peer") return s;
+          // 発表者は待機に戻す。**reorganizing にはしない** — 次の generation_start は
+          // 誰かが参加し直すまで来ないので、「まもなく再開します」は嘘になる。
+          // roster は直後の roster_update でも空になるが、古い顔ぶれを1描画ぶん
+          // 残さないためここでも空にする
+          return {
+            ...s,
+            phase: "waiting",
+            roster: [],
+            generationPeerIds: [],
+            errorMessage: null,
+            abortReason: null,
+            abortMessage: null,
+          };
+
         case "webrtc_signal":
           // 接続手続きのメッセージ。フェーズには関係しない
           return s;

@@ -194,6 +194,10 @@ app.get(
             // generation_failed と同じく、権限と世代の判定は roster 側
             if (clientId) coordinator.modelChanged(clientId, msg.generation);
             break;
+          case "dismiss_peers":
+            // requester かどうかは roster 側で見る(#114)
+            if (clientId) coordinator.dismissPeers(clientId);
+            break;
         }
       },
       onClose() {

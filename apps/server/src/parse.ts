@@ -76,6 +76,9 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
       }
       return { type: "model_changed", generation };
     }
+    case "dismiss_peers":
+      // フィールドを持たない。requesterかどうかは roster 側で見る(#114)
+      return { type: "dismiss_peers" };
     default:
       return null;
   }

@@ -54,6 +54,14 @@ const NOTICE: Partial<Record<Phase, string>> = {
  */
 const CONNECT_STALL_NOTICE = "接続できない参加者がいます。編成を組み直しています";
 
+/**
+ * 全員解除の2段押しで、1回目の押下が有効なままでいる時間(#114)。
+ *
+ * 押したことを忘れるほど長くはせず、続けて押すには足りる長さにする。
+ * armed のまま放置されると、あとの1クリックが解除になってしまう
+ */
+const DISMISS_ARM_MS = 4000;
+
 const PEER_STATUS_LABEL: Record<string, string> = {
   connecting: "接続中",
   ready: "準備完了",
@@ -132,6 +140,11 @@ export function RequesterView() {
   // 毎描画で初期値に戻り、edge として機能しない(`hooks/requesterAccepting.ts`)
   const [acceptingSignal] = useState(() => createAcceptingSignal());
   const [toast, setToast] = useState<Toast | null>(null);
+  /** 全員解除の2段押し。1回目で立ち、DISMISS_ARM_MS 経つか実行すると倒れる(#114) */
+  const [dismissArmed, setDismissArmed] = useState(false);
+  /** 1回目を押した時点の顔ぶれ。確認はこの顔ぶれに対するもので、変われば効力を失う */
+  const [dismissArmedFor, setDismissArmedFor] = useState("");
+  const dismissTimer = useRef<number | null>(null);
 
   /**
    * 生成まわりを初期化する。呼ぶのは3か所:
@@ -285,6 +298,40 @@ export function RequesterView() {
     if (phase === "active") send({ type: "model_changed", generation: rtc.generation });
   };
 
+  /**
+   * 2段押しの効力(#114)。**効果ではなく描画中に導く。** 参加者が入れ替わったり
+   * 0人になったりしたら、押した時点の顔ぶれに対する確認ではなくなるので落とす
+   * (ボタンは disabled になり、「もう一度押すと解除」の表示だけが残ってしまう)
+   */
+  // 区切り文字で繋がない。`clientId` は任意の文字列を取りうる契約なので、
+  // 区切りが値に混ざると別の顔ぶれが同じ鍵になり、確認が無効化されない
+  const rosterKey = JSON.stringify(state.roster.map((p) => p.clientId));
+  const dismissArmedNow = dismissArmed && dismissArmedFor === rosterKey && state.roster.length > 0;
+
+  /**
+   * 参加ピアを全員降ろす(#114)。1回目の押下では実行せず、armed にして待つ。
+   *
+   * 元に戻すには参加者全員に参加し直してもらうしかないので、モデルの載せ替え
+   * (上の `applyModel`、押す前に影響を文章で見せる形)より強い歯止めを置く。
+   *
+   * ここで画面は動かさない。ロスターを空にするのもフェーズを戻すのもHonoが返す
+   * `peers_dismissed` で、サーバが唯一の出口という形は他の操作と揃える
+   */
+  const dismissPeers = () => {
+    if (dismissTimer.current) clearTimeout(dismissTimer.current);
+    if (!dismissArmedNow) {
+      setDismissArmed(true);
+      setDismissArmedFor(rosterKey);
+      // 押しっぱなしで放置された armed が、あとの誤クリックで実行にならないよう
+      // 時間で倒す
+      dismissTimer.current = window.setTimeout(() => setDismissArmed(false), DISMISS_ARM_MS);
+      return;
+    }
+    dismissTimer.current = null;
+    setDismissArmed(false);
+    send({ type: "dismiss_peers" });
+  };
+
   // トラックB: 編成。接続できたら名乗り、すぐ準備完了とする(発表者に起動待ちはない)
   useEffect(() => {
     if (phase !== "preparing") return;
@@ -376,6 +423,7 @@ export function RequesterView() {
   useEffect(
     () => () => {
       if (toastTimer.current) clearTimeout(toastTimer.current);
+      if (dismissTimer.current) clearTimeout(dismissTimer.current);
     },
     [],
   );
@@ -459,7 +507,22 @@ export function RequesterView() {
           <JoinQr emphasized={phase === "idle" || phase === "preparing" || phase === "waiting"} />
 
           <div>
-            <div className={styles.sectionLabel}>PEERS</div>
+            <div className={styles.sectionHead}>
+              <div className={styles.sectionLabel}>PEERS</div>
+              {/*
+                参加ピアの一括解除(#114)。**2段押しにする。** 参加者全員を巻き込む
+                うえ、戻すには全員に参加し直してもらうしかないので、1クリックで
+                起きてよい操作ではない。armed のあいだだけ実行に進む
+              */}
+              <button
+                type="button"
+                className={`${styles.dismiss} ${dismissArmedNow ? styles.dismissArmed : ""}`}
+                disabled={state.roster.length === 0}
+                onClick={dismissPeers}
+              >
+                {dismissArmedNow ? "もう一度押すと解除" : "全員解除"}
+              </button>
+            </div>
             <div className={styles.peers}>
               {state.roster.map((peer) => {
                 const assignment = assignments.find((a) => a.clientId === peer.clientId);
